@@ -1,0 +1,21 @@
+# Python cache files
+__pycache__/
+*.pyc
+
+# Local database configurations & connection profiles (Security: contains passwords!)
+config/connections.json
+state/checkpoints.json
+state/discovery.json
+discovery.json
+
+# Local log files and generated reports
+logs/
+reports/
+report.json
+report.html
+
+# IDE configuration files
+.vscode/
+.idea/
+.project
+.settings/

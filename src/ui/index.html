@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Production Database Migration Tool - AWS to Azure</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <!-- FontAwesome for Premium Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Custom stylesheet -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="header-logo">
+                <div class="logo-icon"><i class="fa-solid fa-database-bolt"></i></div>
+                <div class="logo-text">
+                    <h1>Antigravity Migrator</h1>
+                    <p>Production AWS RDS to Azure MySQL Copy & Verify Engine</p>
+                </div>
+            </div>
+            <div class="header-status">
+                <span id="global-status-badge" class="status-badge idle">
+                    <span class="pulse-dot"></span>
+                    <span id="global-status-text">Engine Idle</span>
+                </span>
+            </div>
+        </header>
+
+        <!-- Main Dashboard Layout -->
+        <main class="dashboard-grid">
+            <!-- Left Panel: Connection Manager & Target Selector -->
+            <section class="panel-left">
+                <!-- Profile Manager Card -->
+                <div class="glass-card profile-card">
+                    <div class="card-header">
+                        <h2><i class="fa-solid fa-id-card"></i> Connection Profiles</h2>
+                        <div class="profile-actions">
+                            <button id="btn-save-profile" class="btn-icon" title="Save Profile"><i class="fa-solid fa-floppy-disk"></i></button>
+                            <button id="btn-delete-profile" class="btn-icon delete" title="Delete Profile"><i class="fa-solid fa-trash-can"></i></button>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group full">
+                            <label for="select-profile">Selected Profile</label>
+                            <div class="select-wrapper">
+                                <select id="select-profile">
+                                    <option value="" disabled selected>-- Select Profile or Create New --</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group full">
+                            <label for="input-profile-name">Profile Name</label>
+                            <input type="text" id="input-profile-name" placeholder="e.g. Production AWS to Azure">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AWS Credentials Card -->
+                <div class="glass-card conn-card">
+                    <div class="card-header">
+                        <h2><i class="fa-brands fa-aws"></i> AWS RDS Source (MySQL)</h2>
+                        <button id="btn-test-aws" class="btn-pill"><i class="fa-solid fa-circle-check"></i> Test</button>
+                    </div>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="aws-host">Endpoint / Host</label>
+                            <input type="text" id="aws-host" placeholder="rds-mysql.xxx.us-east-1.rds.amazonaws.com">
+                        </div>
+                        <div class="form-group port">
+                            <label for="aws-port">Port</label>
+                            <input type="number" id="aws-port" value="3306">
+                        </div>
+                        <div class="form-group">
+                            <label for="aws-user">Username</label>
+                            <input type="text" id="aws-user" placeholder="admin">
+                        </div>
+                        <div class="form-group">
+                            <label for="aws-pass">Password</label>
+                            <div class="password-wrapper">
+                                <input type="password" id="aws-pass" placeholder="••••••••">
+                                <button type="button" class="btn-toggle-pass"><i class="fa-solid fa-eye"></i></button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-row ssl-row">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="aws-ssl">
+                            <span class="slider"></span>
+                        </label>
+                        <span class="toggle-label">Require SSL Connection</span>
+                    </div>
+                </div>
+
+                <!-- Azure Credentials Card -->
+                <div class="glass-card conn-card">
+                    <div class="card-header">
+                        <h2><i class="fa-solid fa-cloud"></i> Azure Destination (MySQL)</h2>
+                        <button id="btn-test-azure" class="btn-pill"><i class="fa-solid fa-circle-check"></i> Test</button>
+                    </div>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="azure-host">Server Host</label>
+                            <input type="text" id="azure-host" placeholder="azure-mysql.mysql.database.azure.com">
+                        </div>
+                        <div class="form-group port">
+                            <label for="azure-port">Port</label>
+                            <input type="number" id="azure-port" value="3306">
+                        </div>
+                        <div class="form-group">
+                            <label for="azure-user">Username</label>
+                            <input type="text" id="azure-user" placeholder="mysqluser">
+                        </div>
+                        <div class="form-group">
+                            <label for="azure-pass">Password</label>
+                            <div class="password-wrapper">
+                                <input type="password" id="azure-pass" placeholder="••••••••">
+                                <button type="button" class="btn-toggle-pass"><i class="fa-solid fa-eye"></i></button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-row ssl-row">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="azure-ssl" checked>
+                            <span class="slider"></span>
+                        </label>
+                        <span class="toggle-label">Require SSL Connection</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Center Panel: Database Selector & Controls -->
+            <section class="panel-center">
+                <!-- Database Selector Card -->
+                <div class="glass-card db-card">
+                    <div class="card-header">
+                        <h2><i class="fa-solid fa-database"></i> Database Selection</h2>
+                        <button id="btn-discover-dbs" class="btn-secondary"><i class="fa-solid fa-magnifying-glass"></i> Discover</button>
+                    </div>
+                    
+                    <!-- Search & Filter -->
+                    <div class="search-bar">
+                        <i class="fa-solid fa-filter filter-icon"></i>
+                        <input type="text" id="db-search" placeholder="Search discovered databases...">
+                    </div>
+
+                    <!-- DB List Container -->
+                    <div class="db-list-container">
+                        <table id="db-table">
+                            <thead>
+                                <tr>
+                                    <th width="40"><input type="checkbox" id="select-all-dbs"></th>
+                                    <th>Database Name</th>
+                                    <th>Size</th>
+                                    <th>Tables</th>
+                                    <th>Routines</th>
+                                </tr>
+                            </thead>
+                            <tbody id="db-list-body">
+                                <tr>
+                                    <td colspan="5" class="empty-state">
+                                        <i class="fa-solid fa-folder-open"></i>
+                                        <p>No databases discovered yet. Enter AWS RDS details and click <strong>Discover</strong>.</p>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Migration Configuration & Execute Panel -->
+                <div class="glass-card exec-card">
+                    <div class="card-header">
+                        <h2><i class="fa-solid fa-gears"></i> Migration Controls</h2>
+                    </div>
+                    <div class="exec-settings">
+                        <div class="settings-grid">
+                            <div class="form-group">
+                                <label for="input-batch-size">Batch Insert Size</label>
+                                <input type="number" id="input-batch-size" value="5000" min="100" max="50000">
+                            </div>
+                            <div class="checkboxes">
+                                <label class="custom-checkbox">
+                                    <input type="checkbox" id="chk-dry-run">
+                                    <span class="checkmark"></span>
+                                    Dry Run (Verify schema only)
+                                </label>
+                                <label class="custom-checkbox">
+                                    <input type="checkbox" id="chk-resume">
+                                    <span class="checkmark"></span>
+                                    Resume Previous Checkpoint
+                                </label>
+                            </div>
+                        </div>
+                        <div class="action-buttons">
+                            <button id="btn-start-migration" class="btn-primary" disabled><i class="fa-solid fa-play"></i> Start Migration</button>
+                            <button id="btn-cancel-migration" class="btn-danger" disabled><i class="fa-solid fa-stop"></i> Cancel</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Right Panel: Real-Time Stats & Logs -->
+            <section class="panel-right">
+                <!-- Live Stats Card -->
+                <div class="glass-card progress-card">
+                    <div class="card-header">
+                        <h2><i class="fa-solid fa-chart-line"></i> Live Progress</h2>
+                        <button id="btn-view-report" class="btn-report" disabled><i class="fa-solid fa-file-invoice"></i> View Report</button>
+                    </div>
+                    <div class="stats-display">
+                        <div class="progress-bar-container">
+                            <div class="progress-labels">
+                                <span id="progress-percent">0%</span>
+                                <span id="progress-tables">0 / 0 Tables</span>
+                            </div>
+                            <div class="progress-track">
+                                <div id="progress-fill" class="progress-fill" style="width: 0%;"></div>
+                            </div>
+                        </div>
+                        <div class="stats-grid">
+                            <div class="stat-box">
+                                <span class="stat-label">Active DB</span>
+                                <span id="stat-active-db" class="stat-val">-</span>
+                            </div>
+                            <div class="stat-box">
+                                <span class="stat-label">Active Table</span>
+                                <span id="stat-active-table" class="stat-val">-</span>
+                            </div>
+                            <div class="stat-box">
+                                <span class="stat-label">Rows Copied</span>
+                                <span id="stat-rows-copied" class="stat-val">0 / 0</span>
+                            </div>
+                            <div class="stat-box">
+                                <span class="stat-label">Speed</span>
+                                <span id="stat-speed" class="stat-val">0 R/s</span>
+                            </div>
+                            <div class="stat-box">
+                                <span class="stat-label">ETA</span>
+                                <span id="stat-eta" class="stat-val">--:--:--</span>
+                            </div>
+                            <div class="stat-box">
+                                <span class="stat-label">Verification</span>
+                                <span id="stat-verification" class="stat-val">-</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Live Log Terminal -->
+                <div class="glass-card log-card">
+                    <div class="card-header">
+                        <h2><i class="fa-solid fa-terminal"></i> Console Logs</h2>
+                        <div class="log-actions">
+                            <button id="btn-clear-logs" class="btn-icon" title="Clear Console"><i class="fa-solid fa-ban"></i></button>
+                            <button id="btn-autoscroll" class="btn-icon active" title="Toggle Auto-Scroll"><i class="fa-solid fa-angles-down"></i></button>
+                        </div>
+                    </div>
+                    <div id="log-terminal" class="log-terminal">
+                        <div class="log-line system">Console initialized. Ready for database discovery.</div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast">
+        <i class="toast-icon fa-solid fa-circle-info"></i>
+        <span id="toast-message">Message goes here</span>
+    </div>
+
+    <!-- Confirm Overwrite Dialog Modal -->
+    <div id="modal-overwrite" class="modal">
+        <div class="modal-content glass-card">
+            <h3><i class="fa-solid fa-triangle-exclamation warning-icon"></i> Overwrite Confirmation</h3>
+            <p id="overwrite-message">Some target databases already exist. Overwriting will drop conflicting elements. Proceed?</p>
+            <div class="modal-buttons">
+                <button id="btn-confirm-overwrite" class="btn-danger">Yes, Overwrite</button>
+                <button id="btn-cancel-overwrite" class="btn-secondary">Abort</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Report Viewer Modal -->
+    <div id="modal-report" class="modal">
+        <div class="modal-content report-modal-content glass-card">
+            <div class="card-header">
+                <h3><i class="fa-solid fa-file-lines"></i> Migration Run Report</h3>
+                <button id="btn-close-report" class="btn-icon"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="report-frame-wrapper">
+                <iframe id="report-iframe" src="about:blank"></iframe>
+            </div>
+        </div>
+    </div>
+
+    <!-- Application Script -->
+    <script src="app.js"></script>
+</body>
+</html>
