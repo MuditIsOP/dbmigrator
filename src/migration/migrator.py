@@ -99,6 +99,11 @@ def execute_with_retry(config, db_name, action_fn, max_retries=3, retry_delay=2)
             raise MigrationCancelled("Migration cancelled by user.")
         try:
             conn = get_connection(config, db_name)
+            try:
+                with conn.cursor() as _init_cur:
+                    _init_cur.execute("SET SESSION sql_generate_invisible_primary_key = 0")
+            except Exception:
+                pass
             res = action_fn(conn)
             return res
         except (pymysql.MySQLError, ConnectionError) as e:
