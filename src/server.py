@@ -74,12 +74,27 @@ def remove_profile(name):
 # Connection Verification & Discovery
 # ==========================================
 
+def resolve_config_password(config, profile_name=None, target="aws"):
+    if not config:
+        return config
+    if config.get("password") == "********" or not config.get("password"):
+        profiles = load_profiles()
+        p_name = profile_name
+        if not p_name and config.get("host"):
+            for name, p in profiles.items():
+                if target in p and p[target].get("host") == config.get("host"):
+                    p_name = name
+                    break
+        if p_name and p_name in profiles and target in profiles[p_name]:
+            config["password"] = profiles[p_name][target].get("password", "")
+    return config
+
 @app.route("/api/connect/test", methods=["POST"])
 def test_conn():
     data = request.json
     config = data.get("config")
     profile_name = data.get("profile_name")
-    target = data.get("target") # "aws" or "azure"
+    target = data.get("target") or "aws" # "aws" or "azure"
     
     # Resolve config if profile_name is specified
     if profile_name:
@@ -92,11 +107,7 @@ def test_conn():
     if not config:
         return jsonify({"success": False, "message": "No connection details provided"}), 400
         
-    # If password is masked, reload original password from profile
-    if config.get("password") == "********" and profile_name:
-        original_profile = load_profiles().get(profile_name)
-        if original_profile and target in original_profile:
-            config["password"] = original_profile[target]["password"]
+    config = resolve_config_password(config, profile_name, target)
 
     success, message = test_connection(config)
     return jsonify({"success": success, "message": message})
@@ -117,16 +128,14 @@ def get_databases():
     if not config:
         return jsonify({"error": "No connection details provided"}), 400
         
-    if config.get("password") == "********" and profile_name:
-        original_profile = load_profiles().get(profile_name)
-        if original_profile and "aws" in original_profile:
-            config["password"] = original_profile["aws"]["password"]
+    config = resolve_config_password(config, profile_name, "aws")
 
     try:
         discovery = discover_databases(config)
         return jsonify(discovery)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 @app.route("/api/databases/<db_name>/tables", methods=["POST"])
 def get_database_tables(db_name):
     data = request.json
@@ -143,10 +152,7 @@ def get_database_tables(db_name):
     if not config:
         return jsonify({"error": "No connection details provided"}), 400
         
-    if config.get("password") == "********" and profile_name:
-        original_profile = load_profiles().get(profile_name)
-        if original_profile and "aws" in original_profile:
-            config["password"] = original_profile["aws"]["password"]
+    config = resolve_config_password(config, profile_name, "aws")
 
     try:
         from src.services.db_client import get_connection

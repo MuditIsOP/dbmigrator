@@ -69,6 +69,13 @@ def save_profiles(profiles):
 
 def add_profile(name, aws_config, azure_config):
     profiles = load_profiles()
+    existing = profiles.get(name, {})
+    
+    if aws_config.get("password") == "********" and "aws" in existing:
+        aws_config["password"] = existing["aws"].get("password", "")
+    if azure_config.get("password") == "********" and "azure" in existing:
+        azure_config["password"] = existing["azure"].get("password", "")
+        
     profiles[name] = {
         "aws": aws_config,
         "azure": azure_config
