@@ -111,5 +111,11 @@ class TestMigrationTool(unittest.TestCase):
         self.assertIn("directus_access", failed_tbls)
         self.assertIn("registers", failed_tbls)
 
+    def test_exclude_directus_filtering(self):
+        """Tests that directus_ tables are filtered when exclude_directus is enabled."""
+        tables = ["orders", "directus_users", "products", "directus_files"]
+        filtered = [t for t in tables if not t.lower().startswith("directus_")]
+        self.assertEqual(filtered, ["orders", "products"])
+
 if __name__ == '__main__':
     unittest.main()

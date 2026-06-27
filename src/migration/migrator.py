@@ -561,7 +561,7 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
             log_migration(db_name, event, "Copy Event", time.time() - op_start, "SUCCESS")
         update_object_checkpoint(db_name, "events", event)
 
-def run_migration_process(aws_config, azure_config, databases, dry_run=False, resume=False, batch_size=5000, verify_only=False, fix_mismatches=False):
+def run_migration_process(aws_config, azure_config, databases, dry_run=False, resume=False, batch_size=5000, verify_only=False, fix_mismatches=False, exclude_directus=True):
     """
     Main migration runner. Connects, inspects, copies schemas, streams data,
     verifies, and logs progress. Supports Auto-Healing sync loop.
@@ -597,6 +597,8 @@ def run_migration_process(aws_config, azure_config, databases, dry_run=False, re
                         (db_name,)
                     )
                     rows = cursor.fetchall()
+                    if exclude_directus:
+                        rows = [r for r in rows if not r["table_name"].lower().startswith("directus_")]
                     if selected_tables:
                         filtered_rows = [r for r in rows if r["table_name"] in selected_tables]
                         migration_progress["tables_total"] += len(filtered_rows)
@@ -630,6 +632,10 @@ def run_migration_process(aws_config, azure_config, databases, dry_run=False, re
             
             tables, views, procedures, functions, triggers_meta, events = execute_with_retry(aws_config, db_name, get_db_objects)
 
+            if exclude_directus:
+                tables = [t for t in tables if not t.lower().startswith("directus_")]
+                triggers_meta = [t for t in triggers_meta if not t[1].lower().startswith("directus_")]
+
             if selected_tables:
                 tables = [t for t in tables if t in selected_tables]
                 triggers = [t[0] for t in triggers_meta if t[1] in selected_tables]
@@ -654,7 +660,7 @@ def run_migration_process(aws_config, azure_config, databases, dry_run=False, re
                     attempt += 1
                     log_migration(db_name, None, f"--- Starting Auto-Healing Audit Loop (Attempt {attempt}/{max_attempts}) ---", 0, "START")
                     
-                    audit_ok, audit_details = verify_database(aws_config, azure_config, db_name, selected_tables)
+                    audit_ok, audit_details = verify_database(aws_config, azure_config, db_name, selected_tables, exclude_directus)
                     verification_ok, ver_details = audit_ok, audit_details
                     
                     if audit_ok:
@@ -696,7 +702,7 @@ def run_migration_process(aws_config, azure_config, databases, dry_run=False, re
             if not dry_run and not fix_mismatches:
                 from src.verification.verifier import verify_database
                 verify_start = time.time()
-                verification_ok, ver_details = verify_database(aws_config, azure_config, db_name, selected_tables)
+                verification_ok, ver_details = verify_database(aws_config, azure_config, db_name, selected_tables, exclude_directus)
                 log_verification(db_name, None, "Full Database Verification Run", time.time() - verify_start, "SUCCESS" if verification_ok else "FAILED")
                 
                 if not verification_ok:
@@ -720,11 +726,11 @@ def run_migration_process(aws_config, azure_config, databases, dry_run=False, re
         log_error(None, None, "Migration Process", time.time() - start_time, "FAILED", e)
         generate_report(databases, start_time, time.time(), dry_run, str(e), False, f"Aborted due to error: {e}")
 
-def start_async_migration(aws_config, azure_config, databases, dry_run=False, resume=False, batch_size=5000, verify_only=False, fix_mismatches=False):
+def start_async_migration(aws_config, azure_config, databases, dry_run=False, resume=False, batch_size=5000, verify_only=False, fix_mismatches=False, exclude_directus=True):
     """Starts the migration process in a background thread."""
     t = threading.Thread(
         target=run_migration_process,
-        args=(aws_config, azure_config, databases, dry_run, resume, batch_size, verify_only, fix_mismatches),
+        args=(aws_config, azure_config, databases, dry_run, resume, batch_size, verify_only, fix_mismatches, exclude_directus),
         daemon=True
     )
     t.start()

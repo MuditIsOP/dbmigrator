@@ -39,6 +39,7 @@ const chkDryRun = document.getElementById("chk-dry-run");
 const chkResume = document.getElementById("chk-resume");
 const chkVerifyOnly = document.getElementById("chk-verify-only");
 const chkFixMismatches = document.getElementById("chk-fix-mismatches");
+const chkExcludeDirectus = document.getElementById("chk-exclude-directus");
 const btnStartMigration = document.getElementById("btn-start-migration");
 const btnCancelMigration = document.getElementById("btn-cancel-migration");
 
@@ -645,6 +646,7 @@ async function startMigration(confirmOverwrite = false) {
         resume: chkResume.checked,
         verify_only: chkVerifyOnly.checked,
         fix_mismatches: chkFixMismatches.checked,
+        exclude_directus: chkExcludeDirectus.checked,
         batch_size: parseInt(inputBatchSize.value) || 5000,
         confirm_overwrite: confirmOverwrite
     };

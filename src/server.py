@@ -192,6 +192,7 @@ def start_migration():
     resume = data.get("resume", False)
     verify_only = data.get("verify_only", False)
     fix_mismatches = data.get("fix_mismatches", False)
+    exclude_directus = data.get("exclude_directus", True)
     batch_size = int(data.get("batch_size", 5000))
     confirm_overwrite = data.get("confirm_overwrite", False)
     
@@ -247,8 +248,8 @@ def start_migration():
 
     # Start migration in background
     db_names = list(databases.keys())
-    log_migration(None, None, f"Starting migration for {', '.join(db_names)} (Dry run: {dry_run}, Verify only: {verify_only}, Fix mismatches: {fix_mismatches})", 0, "START")
-    start_async_migration(aws_config, azure_config, databases, dry_run, resume, batch_size, verify_only, fix_mismatches)
+    log_migration(None, None, f"Starting migration for {', '.join(db_names)} (Dry run: {dry_run}, Verify only: {verify_only}, Fix mismatches: {fix_mismatches}, Exclude directus: {exclude_directus})", 0, "START")
+    start_async_migration(aws_config, azure_config, databases, dry_run, resume, batch_size, verify_only, fix_mismatches, exclude_directus)
     return jsonify({"message": "Migration started successfully"})
 
 @app.route("/api/migrate/status", methods=["GET"])

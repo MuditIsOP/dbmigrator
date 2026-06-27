@@ -167,7 +167,7 @@ def calculate_table_checksum_sql(columns):
     checksum_sql = f"SELECT COALESCE(BIT_XOR(CAST(CONV(SUBSTRING(MD5({concat_expr}), 1, 16), 16, 10) AS UNSIGNED)), 0) AS checksum FROM"
     return checksum_sql
 
-def verify_database(aws_config, azure_config, db_name, selected_tables=None):
+def verify_database(aws_config, azure_config, db_name, selected_tables=None, exclude_directus=False):
     """
     Main verification entrypoint. Compares AWS RDS and Azure MySQL metadata.
     Returns (success_boolean, mismatch_details_string).
@@ -188,6 +188,12 @@ def verify_database(aws_config, azure_config, db_name, selected_tables=None):
         aws_tables = set(aws_meta["tables"].keys())
         az_tables = set(az_meta["tables"].keys())
         
+        if exclude_directus:
+            aws_tables = {t for t in aws_tables if not t.lower().startswith("directus_")}
+            az_tables = {t for t in az_tables if not t.lower().startswith("directus_")}
+            aws_meta["triggers"] = [t for t in aws_meta["triggers"] if not t[1].lower().startswith("directus_")]
+            az_meta["triggers"] = [t for t in az_meta["triggers"] if not t[1].lower().startswith("directus_")]
+
         # Filter tables if selection is active
         if selected_tables:
             selected_set_lower = {t.lower() for t in selected_tables}
