@@ -894,3 +894,98 @@ iframe {
     height: 100%;
     border: none;
 }
+
+/* EXPANDABLE DB TABLES STYLES */
+.btn-expand-db {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    margin-right: 8px;
+    font-size: 11px;
+    width: 18px;
+    height: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: var(--transition);
+}
+
+.btn-expand-db:hover {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.btn-expand-db.expanded {
+    transform: rotate(90deg);
+    color: var(--primary);
+}
+
+.db-tables-row {
+    background: rgba(0, 0, 0, 0.25) !important;
+}
+
+.nested-tables-container {
+    padding: 12px 16px;
+    border-left: 2px solid var(--primary);
+    background: rgba(255, 255, 255, 0.01);
+    border-radius: 0 8px 8px 0;
+}
+
+.nested-loading {
+    font-size: 12px;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+}
+
+.nested-tables-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 12px;
+    max-height: 250px;
+    overflow-y: auto;
+    padding: 4px;
+}
+
+.nested-table-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    background: rgba(0, 0, 0, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.03);
+    border-radius: 8px;
+    padding: 8px 12px;
+    transition: var(--transition);
+}
+
+.nested-table-item:hover {
+    border-color: rgba(99, 102, 241, 0.15);
+    background: rgba(0, 0, 0, 0.25);
+}
+
+.nested-table-item input[type="checkbox"] {
+    margin-top: 3px;
+    cursor: pointer;
+}
+
+.nested-table-details {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.nested-table-name {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    word-break: break-all;
+}
+
+.nested-table-meta {
+    font-size: 10px;
+    color: var(--text-muted);
+}

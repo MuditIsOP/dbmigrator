@@ -127,6 +127,54 @@ def get_databases():
         return jsonify(discovery)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+@app.route("/api/databases/<db_name>/tables", methods=["POST"])
+def get_database_tables(db_name):
+    data = request.json
+    config = data.get("config")
+    profile_name = data.get("profile_name")
+    
+    if profile_name:
+        profiles = load_profiles()
+        profile = profiles.get(profile_name)
+        if not profile:
+            return jsonify({"error": "Profile not found"}), 404
+        config = profile.get("aws")
+        
+    if not config:
+        return jsonify({"error": "No connection details provided"}), 400
+        
+    if config.get("password") == "********" and profile_name:
+        original_profile = load_profiles().get(profile_name)
+        if original_profile and "aws" in original_profile:
+            config["password"] = original_profile["aws"]["password"]
+
+    try:
+        from src.services.db_client import get_connection
+        conn = get_connection(config, db_name)
+        tables = []
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT 
+                        TABLE_NAME, 
+                        COALESCE(TABLE_ROWS, 0) AS TABLE_ROWS, 
+                        COALESCE(DATA_LENGTH + INDEX_LENGTH, 0) AS SIZE_BYTES
+                    FROM information_schema.TABLES 
+                    WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE'
+                    ORDER BY TABLE_NAME
+                """, (db_name,))
+                rows = cursor.fetchall()
+                for r in rows:
+                    tables.append({
+                        "name": r["TABLE_NAME"],
+                        "rows": int(r["TABLE_ROWS"]),
+                        "size_bytes": int(r["SIZE_BYTES"])
+                    })
+            return jsonify(tables)
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # ==========================================
 # Migration Control Endpoints
@@ -139,16 +187,26 @@ def start_migration():
         
     data = request.json
     profile_name = data.get("profile_name")
-    databases = data.get("databases", [])
+    databases_input = data.get("databases")
     dry_run = data.get("dry_run", False)
     resume = data.get("resume", False)
+    verify_only = data.get("verify_only", False)
+    fix_mismatches = data.get("fix_mismatches", False)
     batch_size = int(data.get("batch_size", 5000))
     confirm_overwrite = data.get("confirm_overwrite", False)
     
     if not profile_name:
         return jsonify({"error": "Profile name is required"}), 400
-    if not databases:
+    if not databases_input:
         return jsonify({"error": "Select at least one database"}), 400
+        
+    # Normalize databases_input to dict mapping db_name -> selected_tables list
+    if isinstance(databases_input, list):
+        databases = {db: [] for db in databases_input}
+    elif isinstance(databases_input, dict):
+        databases = databases_input
+    else:
+        return jsonify({"error": "Invalid databases format"}), 400
         
     profiles = load_profiles()
     profile = profiles.get(profile_name)
@@ -158,11 +216,11 @@ def start_migration():
     aws_config = profile["aws"]
     azure_config = profile["azure"]
     
-    # Check if database already exists on Azure and warn if not confirmed
-    if not dry_run and not confirm_overwrite:
+    # Check if database already exists on Azure and warn if not confirmed (skip if verify_only or fix_mismatches is active)
+    if not dry_run and not verify_only and not fix_mismatches and not confirm_overwrite:
         # Check if any database exists on Azure
         existing_dbs = []
-        for db in databases:
+        for db in databases.keys():
             success, msg = test_connection(azure_config)
             if success:
                 from src.services.db_client import get_connection
@@ -188,8 +246,9 @@ def start_migration():
             }), 200
 
     # Start migration in background
-    log_migration(None, None, f"Starting migration for {', '.join(databases)} (Dry run: {dry_run})", 0, "START")
-    start_async_migration(aws_config, azure_config, databases, dry_run, resume, batch_size)
+    db_names = list(databases.keys())
+    log_migration(None, None, f"Starting migration for {', '.join(db_names)} (Dry run: {dry_run}, Verify only: {verify_only}, Fix mismatches: {fix_mismatches})", 0, "START")
+    start_async_migration(aws_config, azure_config, databases, dry_run, resume, batch_size, verify_only, fix_mismatches)
     return jsonify({"message": "Migration started successfully"})
 
 @app.route("/api/migrate/status", methods=["GET"])

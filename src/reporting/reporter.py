@@ -8,7 +8,7 @@ os.makedirs(REPORTS_DIR, exist_ok=True)
 REPORT_JSON_PATH = os.path.join(REPORTS_DIR, "report.json")
 REPORT_HTML_PATH = os.path.join(REPORTS_DIR, "report.html")
 
-def generate_report(databases, start_time, end_time, dry_run, error_message=None):
+def generate_report(databases, start_time, end_time, dry_run, error_message=None, verification_ok=None, verification_details=None):
     """
     Compiles migration statistics and generates report.json and a premium report.html.
     """
@@ -34,21 +34,13 @@ def generate_report(databases, start_time, end_time, dry_run, error_message=None
     logs_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "logs"))
     error_count = 0
     warning_count = 0
-    verification_passed = True
-    verification_details = "All verification steps completed and passed."
     
-    # Read verification results from logs/verification.log
-    ver_log_path = os.path.join(logs_dir, "verification.log")
-    if os.path.exists(ver_log_path):
-        try:
-            with open(ver_log_path, "r", encoding="utf-8") as f:
-                ver_lines = f.readlines()
-                for line in ver_lines:
-                    if "Verification Status: FAILED" in line or "FAILED" in line:
-                        verification_passed = False
-                        verification_details = "Some verification steps failed. Check logs/verification.log."
-        except Exception:
-            pass
+    if verification_ok is not None:
+        verification_passed = verification_ok
+        verification_details = verification_details or ("All verification steps completed and passed." if verification_ok else "Verification failed.")
+    else:
+        verification_passed = True if not error_message else False
+        verification_details = "All verification steps completed." if not error_message else f"Aborted due to: {error_message}"
 
     # Read error count from logs/error.log
     err_log_path = os.path.join(logs_dir, "error.log")
@@ -59,7 +51,6 @@ def generate_report(databases, start_time, end_time, dry_run, error_message=None
         except Exception:
             pass
 
-    # Read warning count or other metrics
     if error_message:
         error_count += 1
         verification_passed = False

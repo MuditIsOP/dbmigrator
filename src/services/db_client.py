@@ -1,8 +1,44 @@
 import os
 import json
 import pymysql
+import pymysql.cursors
 from pymysql.constants import CLIENT
 from src.utils.logger import log_migration, log_error
+
+class CaseInsensitiveDict(dict):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._lower_map = {k.lower() if isinstance(k, str) else k: k for k in self}
+
+    def __contains__(self, key):
+        if isinstance(key, str):
+            return key.lower() in self._lower_map
+        return super().__contains__(key)
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            lower_key = key.lower()
+            if lower_key in self._lower_map:
+                return super().__getitem__(self._lower_map[lower_key])
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        if isinstance(key, str):
+            lower_key = key.lower()
+            if lower_key in self._lower_map:
+                return super().__getitem__(self._lower_map[lower_key])
+        return super().get(key, default)
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self._lower_map[key.lower() if isinstance(key, str) else key] = key
+
+    def __delitem__(self, key):
+        super().__delitem__(key)
+        self._lower_map.pop(key.lower() if isinstance(key, str) else key, None)
+
+class CaseInsensitiveDictCursor(pymysql.cursors.DictCursor):
+    dict_type = CaseInsensitiveDict
 
 STATE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "state"))
 os.makedirs(STATE_DIR, exist_ok=True)
@@ -18,10 +54,6 @@ def get_connection(config, db_name=None):
         ssl_config = {}
         if config.get("ssl_ca"):
             ssl_config["ca"] = config["ssl_ca"]
-        # If no ca is provided but ssl is enabled, pymysql can accept True or empty dict to request SSL
-        # We can pass True to enable default SSL verification
-        if not ssl_config:
-            ssl_config = True
             
     # Parse port safely
     port = config.get("port", 3306)
@@ -36,9 +68,16 @@ def get_connection(config, db_name=None):
         database=db_name,
         ssl=ssl_config,
         charset="utf8mb4",
-        cursorclass=pymysql.cursors.DictCursor,
+        autocommit=True,
+        cursorclass=CaseInsensitiveDictCursor,
         client_flag=CLIENT.MULTI_RESULTS,  # Allow multiple statements/results
-        connect_timeout=10
+        connect_timeout=10,
+        read_timeout=300,   # 5 min read timeout for large batch fetches
+        write_timeout=300,  # 5 min write timeout for large batch inserts
+        # Clear restrictive sql_mode so that AWS zero-dates ('0000-00-00 00:00:00')
+        # are accepted by Azure Flexible Server without error 1292.
+        # Disable max_execution_time so long queries aren't killed during migration.
+        init_command="SET SESSION sql_mode = '', SESSION max_execution_time = 0"
     )
 
 def test_connection(config):
@@ -90,63 +129,70 @@ def discover_databases(aws_config):
                     "event_count": 0
                 }
             
-            # 2. Gather sizes, tables, and views counts per schema
-            cursor.execute("""
-                SELECT 
-                    table_schema, 
-                    SUM(COALESCE(data_length + index_length, 0)) as size_bytes,
-                    SUM(CASE WHEN table_type = 'BASE TABLE' THEN 1 ELSE 0 END) as tables,
-                    SUM(CASE WHEN table_type = 'VIEW' THEN 1 ELSE 0 END) as views
-                FROM information_schema.tables 
-                GROUP BY table_schema
-            """)
-            table_stats = cursor.fetchall()
-            for stat in table_stats:
-                db_name = stat["table_schema"]
-                if db_name in discovery:
-                    discovery[db_name]["size_bytes"] = int(stat["size_bytes"] or 0)
-                    discovery[db_name]["table_count"] = int(stat["tables"] or 0)
-                    discovery[db_name]["view_count"] = int(stat["views"] or 0)
-            
-            # 3. Gather routines (procedures and functions) count
-            cursor.execute("""
-                SELECT routine_schema, routine_type, COUNT(*) as cnt 
-                FROM information_schema.routines 
-                GROUP BY routine_schema, routine_type
-            """)
-            routine_stats = cursor.fetchall()
-            for stat in routine_stats:
-                db_name = stat["routine_schema"]
-                if db_name in discovery:
-                    r_type = stat["routine_type"].lower()
-                    if r_type == "procedure":
-                        discovery[db_name]["procedure_count"] = stat["cnt"]
-                    elif r_type == "function":
-                        discovery[db_name]["function_count"] = stat["cnt"]
-            
-            # 4. Gather triggers count
-            cursor.execute("""
-                SELECT trigger_schema, COUNT(*) as cnt 
-                FROM information_schema.triggers 
-                GROUP BY trigger_schema
-            """)
-            trigger_stats = cursor.fetchall()
-            for stat in trigger_stats:
-                db_name = stat["trigger_schema"]
-                if db_name in discovery:
-                    discovery[db_name]["trigger_count"] = stat["cnt"]
-                    
-            # 5. Gather events count
-            cursor.execute("""
-                SELECT event_schema, COUNT(*) as cnt 
-                FROM information_schema.events 
-                GROUP BY event_schema
-            """)
-            event_stats = cursor.fetchall()
-            for stat in event_stats:
-                db_name = stat["event_schema"]
-                if db_name in discovery:
-                    discovery[db_name]["event_count"] = stat["cnt"]
+            # 2. Gather sizes, tables, and views counts per schema (optimized to avoid full scans)
+            if discovery:
+                db_names = tuple(discovery.keys())
+                
+                cursor.execute("""
+                    SELECT 
+                        table_schema, 
+                        SUM(COALESCE(data_length + index_length, 0)) as size_bytes,
+                        SUM(CASE WHEN table_type = 'BASE TABLE' THEN 1 ELSE 0 END) as tables,
+                        SUM(CASE WHEN table_type = 'VIEW' THEN 1 ELSE 0 END) as views
+                    FROM information_schema.tables 
+                    WHERE table_schema IN %s
+                    GROUP BY table_schema
+                """, (db_names,))
+                table_stats = cursor.fetchall()
+                for stat in table_stats:
+                    db_name = stat["table_schema"]
+                    if db_name in discovery:
+                        discovery[db_name]["size_bytes"] = int(stat["size_bytes"] or 0)
+                        discovery[db_name]["table_count"] = int(stat["tables"] or 0)
+                        discovery[db_name]["view_count"] = int(stat["views"] or 0)
+                
+                # 3. Gather routines (procedures and functions) count
+                cursor.execute("""
+                    SELECT routine_schema, routine_type, COUNT(*) as cnt 
+                    FROM information_schema.routines 
+                    WHERE routine_schema IN %s
+                    GROUP BY routine_schema, routine_type
+                """, (db_names,))
+                routine_stats = cursor.fetchall()
+                for stat in routine_stats:
+                    db_name = stat["routine_schema"]
+                    if db_name in discovery:
+                        r_type = stat["routine_type"].lower()
+                        if r_type == "procedure":
+                            discovery[db_name]["procedure_count"] = stat["cnt"]
+                        elif r_type == "function":
+                            discovery[db_name]["function_count"] = stat["cnt"]
+                
+                # 4. Gather triggers count
+                cursor.execute("""
+                    SELECT trigger_schema, COUNT(*) as cnt 
+                    FROM information_schema.triggers 
+                    WHERE trigger_schema IN %s
+                    GROUP BY trigger_schema
+                """, (db_names,))
+                trigger_stats = cursor.fetchall()
+                for stat in trigger_stats:
+                    db_name = stat["trigger_schema"]
+                    if db_name in discovery:
+                        discovery[db_name]["trigger_count"] = stat["cnt"]
+                        
+                # 5. Gather events count
+                cursor.execute("""
+                    SELECT event_schema, COUNT(*) as cnt 
+                    FROM information_schema.events 
+                    WHERE event_schema IN %s
+                    GROUP BY event_schema
+                """, (db_names,))
+                event_stats = cursor.fetchall()
+                for stat in event_stats:
+                    db_name = stat["event_schema"]
+                    if db_name in discovery:
+                        discovery[db_name]["event_count"] = stat["cnt"]
                     
         # Save as discovery.json in state folder
         with open(DISCOVERY_PATH, "w", encoding="utf-8") as f:

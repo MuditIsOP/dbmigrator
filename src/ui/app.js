@@ -37,6 +37,8 @@ const dbListBody = document.getElementById("db-list-body");
 const inputBatchSize = document.getElementById("input-batch-size");
 const chkDryRun = document.getElementById("chk-dry-run");
 const chkResume = document.getElementById("chk-resume");
+const chkVerifyOnly = document.getElementById("chk-verify-only");
+const chkFixMismatches = document.getElementById("chk-fix-mismatches");
 const btnStartMigration = document.getElementById("btn-start-migration");
 const btnCancelMigration = document.getElementById("btn-cancel-migration");
 
@@ -371,8 +373,11 @@ async function handleDiscoverDbs() {
     }
 }
 
+let loadedTables = {};
+
 function renderDatabasesTable() {
     dbListBody.innerHTML = "";
+    loadedTables = {};
     const dbNames = Object.keys(discoveredDbs);
     
     if (dbNames.length === 0) {
@@ -394,31 +399,156 @@ function renderDatabasesTable() {
         const row = document.createElement("tr");
         row.innerHTML = `
             <td><input type="checkbox" class="db-row-chk" value="${name}"></td>
-            <td class="db-name-cell"><strong>${name}</strong></td>
+            <td class="db-name-cell">
+                <button class="btn-expand-db" data-db="${name}"><i class="fa-solid fa-chevron-right"></i></button>
+                <strong>${name}</strong>
+            </td>
             <td>${sizeMb} MB</td>
             <td>${db.table_count}</td>
             <td>${db.procedure_count + db.function_count}</td>
         `;
         
+        // Collapsible nested tables subrow
+        const subRow = document.createElement("tr");
+        subRow.className = "db-tables-row";
+        subRow.id = `tables-row-${name}`;
+        subRow.style.display = "none";
+        subRow.innerHTML = `
+            <td></td>
+            <td colspan="4">
+                <div class="nested-tables-container">
+                    <div class="nested-loading" id="nested-loading-${name}"><i class="fa-solid fa-spinner fa-spin"></i> Loading tables...</div>
+                    <div class="nested-tables-grid" id="nested-grid-${name}" style="display: none;"></div>
+                </div>
+            </td>
+        `;
+        
+        // Expand click listener
+        row.querySelector(".btn-expand-db").addEventListener("click", function(e) {
+            e.stopPropagation();
+            toggleDatabaseTables(name, this);
+        });
+        
         // Checkbox click listener
         row.querySelector(".db-row-chk").addEventListener("change", handleRowCheckChange);
+        
         dbListBody.appendChild(row);
+        dbListBody.appendChild(subRow);
     });
+}
+
+async function toggleDatabaseTables(dbName, btn) {
+    const subRow = document.getElementById(`tables-row-${dbName}`);
+    if (!subRow) return;
+    
+    const isCollapsed = subRow.style.display === "none";
+    if (isCollapsed) {
+        subRow.style.display = "";
+        btn.classList.add("expanded");
+        btn.innerHTML = '<i class="fa-solid fa-chevron-down"></i>';
+        
+        if (!loadedTables[dbName]) {
+            await loadDatabaseTablesFromServer(dbName);
+        }
+    } else {
+        subRow.style.display = "none";
+        btn.classList.remove("expanded");
+        btn.innerHTML = '<i class="fa-solid fa-chevron-right"></i>';
+    }
+}
+
+async function loadDatabaseTablesFromServer(dbName) {
+    const loadingEl = document.getElementById(`nested-loading-${dbName}`);
+    const gridEl = document.getElementById(`nested-grid-${dbName}`);
+    const dbRowChk = dbListBody.querySelector(`tr:not(.db-tables-row) .db-row-chk[value="${dbName}"]`);
+    const isDbChecked = dbRowChk ? dbRowChk.checked : false;
+    
+    const profileName = selectProfile.value || null;
+    const config = {
+        host: awsHost.value.trim(),
+        port: parseInt(awsPort.value) || 3306,
+        user: awsUser.value.trim(),
+        password: awsPass.value,
+        ssl_enabled: awsSsl.checked
+    };
+    
+    try {
+        const response = await fetch(`${API_BASE}/api/databases/${encodeURIComponent(dbName)}/tables`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ config, profile_name: profileName })
+        });
+        
+        if (response.ok) {
+            const tables = await response.json();
+            loadedTables[dbName] = tables;
+            
+            gridEl.innerHTML = "";
+            if (tables.length === 0) {
+                gridEl.innerHTML = '<div class="empty-state" style="grid-column: 1/-1; padding: 10px !important;">No tables found in database.</div>';
+            } else {
+                tables.forEach(t => {
+                    const item = document.createElement("div");
+                    item.className = "nested-table-item";
+                    const sizeMb = (t.size_bytes / (1024 * 1024)).toFixed(2);
+                    
+                    item.innerHTML = `
+                        <input type="checkbox" class="table-chk" data-db="${dbName}" value="${t.name}" ${isDbChecked ? 'checked' : ''}>
+                        <div class="nested-table-details">
+                            <span class="nested-table-name" title="${t.name}">${t.name}</span>
+                            <span class="nested-table-meta">${t.rows.toLocaleString()} rows • ${sizeMb} MB</span>
+                        </div>
+                    `;
+                    
+                    item.querySelector(".table-chk").addEventListener("change", () => handleTableCheckChange(dbName));
+                    gridEl.appendChild(item);
+                });
+            }
+            loadingEl.style.display = "none";
+            gridEl.style.display = "grid";
+        } else {
+            const errData = await response.json();
+            loadingEl.innerHTML = `<i class="fa-solid fa-triangle-exclamation" style="color: var(--danger);"></i> Failed: ${errData.error}`;
+        }
+    } catch (err) {
+        loadingEl.innerHTML = '<i class="fa-solid fa-triangle-exclamation" style="color: var(--danger);"></i> Error loading tables.';
+    }
+}
+
+function handleTableCheckChange(dbName) {
+    const subRow = document.getElementById(`tables-row-${dbName}`);
+    const dbRowChk = dbListBody.querySelector(`tr:not(.db-tables-row) .db-row-chk[value="${dbName}"]`);
+    if (!subRow || !dbRowChk) return;
+    
+    const checkedTableChks = subRow.querySelectorAll(".table-chk:checked");
+    if (checkedTableChks.length > 0) {
+        dbRowChk.checked = true;
+    } else {
+        dbRowChk.checked = false;
+    }
+    
+    updateSelectedDbsArray();
 }
 
 function filterDatabasesTable() {
     const q = dbSearch.value.toLowerCase().trim();
-    const rows = dbListBody.querySelectorAll("tr");
+    const rows = dbListBody.querySelectorAll("tr:not(.db-tables-row)");
     
     rows.forEach(row => {
-        const nameCell = row.querySelector(".db-name-cell");
-        if (!nameCell) return;
+        const nameCell = row.querySelector(".db-name-cell strong");
+        const dbName = nameCell ? nameCell.textContent.toLowerCase() : "";
+        const subRow = row.nextElementSibling;
         
-        const name = nameCell.textContent.toLowerCase();
-        if (name.includes(q)) {
+        if (dbName.includes(q)) {
             row.style.display = "";
+            // Keep subrow expanded state matching arrow class
+            const expandBtn = row.querySelector(".btn-expand-db");
+            if (expandBtn && expandBtn.classList.contains("expanded")) {
+                subRow.style.display = "";
+            }
         } else {
             row.style.display = "none";
+            subRow.style.display = "none";
         }
     });
 }
@@ -429,23 +559,67 @@ function handleSelectAllDbs() {
     
     visibleChks.forEach(chk => {
         chk.checked = checked;
+        const dbName = chk.value;
+        const subRow = document.getElementById(`tables-row-${dbName}`);
+        if (subRow) {
+            subRow.querySelectorAll(".table-chk").forEach(tChk => {
+                tChk.checked = checked;
+            });
+        }
     });
     
     updateSelectedDbsArray();
 }
 
 function handleRowCheckChange() {
+    const dbName = this.value;
+    const checked = this.checked;
+    const subRow = document.getElementById(`tables-row-${dbName}`);
+    if (subRow) {
+        subRow.querySelectorAll(".table-chk").forEach(tChk => {
+            tChk.checked = checked;
+        });
+    }
     updateSelectedDbsArray();
 }
 
 function updateSelectedDbsArray() {
-    const chks = dbListBody.querySelectorAll(".db-row-chk");
+    const chks = dbListBody.querySelectorAll("tr:not(.db-tables-row) .db-row-chk");
     selectedDbs = [];
     chks.forEach(chk => {
         if (chk.checked) {
             selectedDbs.push(chk.value);
         }
     });
+    btnStartMigration.disabled = selectedDbs.length === 0;
+}
+
+function buildMigrationPayload() {
+    const payload = {};
+    const dbRows = dbListBody.querySelectorAll("tr:not(.db-tables-row)");
+    
+    dbRows.forEach(row => {
+        const chk = row.querySelector(".db-row-chk");
+        if (!chk) return;
+        const dbName = chk.value;
+        
+        const subRow = document.getElementById(`tables-row-${dbName}`);
+        const tableChks = subRow.querySelectorAll(".table-chk");
+        const checkedTableChks = subRow.querySelectorAll(".table-chk:checked");
+        
+        if (chk.checked || checkedTableChks.length > 0) {
+            const selectedTables = [];
+            // If sub-tables are loaded and not all of them are selected, capture the selected ones.
+            // If all are checked or none are loaded, we pass empty array (which means migrate all tables)
+            if (tableChks.length > 0 && checkedTableChks.length < tableChks.length) {
+                checkedTableChks.forEach(tChk => {
+                    selectedTables.push(tChk.value);
+                });
+            }
+            payload[dbName] = selectedTables;
+        }
+    });
+    return payload;
 }
 
 // ==========================================
@@ -466,9 +640,11 @@ async function startMigration(confirmOverwrite = false) {
     
     const payload = {
         profile_name: profileName,
-        databases: selectedDbs,
+        databases: buildMigrationPayload(),
         dry_run: chkDryRun.checked,
         resume: chkResume.checked,
+        verify_only: chkVerifyOnly.checked,
+        fix_mismatches: chkFixMismatches.checked,
         batch_size: parseInt(inputBatchSize.value) || 5000,
         confirm_overwrite: confirmOverwrite
     };
@@ -486,14 +662,12 @@ async function startMigration(confirmOverwrite = false) {
         const data = await response.json();
         
         if (data.warning === "database_exists") {
-            // Prompt warning modal
             overwriteMessage.textContent = data.message;
             modalOverwrite.classList.add("show");
             btnStartMigration.disabled = false;
             btnCancelMigration.disabled = true;
         } else if (response.ok) {
             showToast("Migration process spawned!", "success");
-            // Clear current log console screen and open SSE stream
             logTerminal.innerHTML = "";
             connectLogStream();
             startPollingStatus();
