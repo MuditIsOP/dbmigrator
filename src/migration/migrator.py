@@ -318,7 +318,13 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
                 def insert_batch(conn):
                     with conn.cursor() as cursor:
                         cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
-                        columns = rows[0].keys()
+                        cursor.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s", (db_name, table))
+                        az_cols = {r["COLUMN_NAME"] for r in cursor.fetchall()}
+                        if az_cols:
+                            columns = [c for c in rows[0].keys() if c in az_cols]
+                        else:
+                            columns = list(rows[0].keys())
+                            
                         col_names_str = ", ".join([f"`{c}`" for c in columns])
                         placeholders = ", ".join(["%s"] * len(columns))
                         insert_sql = f"INSERT INTO `{table}` ({col_names_str}) VALUES ({placeholders})"
@@ -461,16 +467,19 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
             with conn.cursor() as cursor:
                 cursor.execute(f"SHOW CREATE VIEW `{view}`")
                 return cursor.fetchone()["Create View"]
-        view_ddl = clean_sql_definer(execute_with_retry(aws_config, db_name, get_view_ddl))
-        if not dry_run:
-            def create_view(conn):
-                with conn.cursor() as cursor:
-                    cursor.execute(f"DROP VIEW IF EXISTS `{view}`")
-                    cursor.execute(view_ddl)
-            op_start = time.time()
-            execute_with_retry(azure_config, db_name, create_view)
-            log_migration(db_name, view, "Copy View", time.time() - op_start, "SUCCESS")
-        update_object_checkpoint(db_name, "views", view)
+        try:
+            view_ddl = clean_sql_definer(execute_with_retry(aws_config, db_name, get_view_ddl))
+            if not dry_run:
+                def create_view(conn):
+                    with conn.cursor() as cursor:
+                        cursor.execute(f"DROP VIEW IF EXISTS `{view}`")
+                        cursor.execute(view_ddl)
+                op_start = time.time()
+                execute_with_retry(azure_config, db_name, create_view)
+                log_migration(db_name, view, "Copy View", time.time() - op_start, "SUCCESS")
+            update_object_checkpoint(db_name, "views", view)
+        except Exception as ex:
+            log_migration(db_name, view, f"Warning: View copy failed: {ex}", 0, "WARNING")
 
     for func in functions:
         if migration_progress["cancel_requested"]:
@@ -479,16 +488,19 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
             with conn.cursor() as cursor:
                 cursor.execute(f"SHOW CREATE FUNCTION `{func}`")
                 return cursor.fetchone()["Create Function"]
-        func_ddl = clean_sql_definer(execute_with_retry(aws_config, db_name, get_func_ddl))
-        if not dry_run:
-            def create_func(conn):
-                with conn.cursor() as cursor:
-                    cursor.execute(f"DROP FUNCTION IF EXISTS `{func}`")
-                    cursor.execute(func_ddl)
-            op_start = time.time()
-            execute_with_retry(azure_config, db_name, create_func)
-            log_migration(db_name, func, "Copy Function", time.time() - op_start, "SUCCESS")
-        update_object_checkpoint(db_name, "functions", func)
+        try:
+            func_ddl = clean_sql_definer(execute_with_retry(aws_config, db_name, get_func_ddl))
+            if not dry_run:
+                def create_func(conn):
+                    with conn.cursor() as cursor:
+                        cursor.execute(f"DROP FUNCTION IF EXISTS `{func}`")
+                        cursor.execute(func_ddl)
+                op_start = time.time()
+                execute_with_retry(azure_config, db_name, create_func)
+                log_migration(db_name, func, "Copy Function", time.time() - op_start, "SUCCESS")
+            update_object_checkpoint(db_name, "functions", func)
+        except Exception as ex:
+            log_migration(db_name, func, f"Warning: Function copy failed: {ex}", 0, "WARNING")
 
     for proc in procedures:
         if migration_progress["cancel_requested"]:
@@ -497,16 +509,19 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
             with conn.cursor() as cursor:
                 cursor.execute(f"SHOW CREATE PROCEDURE `{proc}`")
                 return cursor.fetchone()["Create Procedure"]
-        proc_ddl = clean_sql_definer(execute_with_retry(aws_config, db_name, get_proc_ddl))
-        if not dry_run:
-            def create_proc(conn):
-                with conn.cursor() as cursor:
-                    cursor.execute(f"DROP PROCEDURE IF EXISTS `{proc}`")
-                    cursor.execute(proc_ddl)
-            op_start = time.time()
-            execute_with_retry(azure_config, db_name, create_proc)
-            log_migration(db_name, proc, "Copy Procedure", time.time() - op_start, "SUCCESS")
-        update_object_checkpoint(db_name, "procedures", proc)
+        try:
+            proc_ddl = clean_sql_definer(execute_with_retry(aws_config, db_name, get_proc_ddl))
+            if not dry_run:
+                def create_proc(conn):
+                    with conn.cursor() as cursor:
+                        cursor.execute(f"DROP PROCEDURE IF EXISTS `{proc}`")
+                        cursor.execute(proc_ddl)
+                op_start = time.time()
+                execute_with_retry(azure_config, db_name, create_proc)
+                log_migration(db_name, proc, "Copy Procedure", time.time() - op_start, "SUCCESS")
+            update_object_checkpoint(db_name, "procedures", proc)
+        except Exception as ex:
+            log_migration(db_name, proc, f"Warning: Procedure copy failed: {ex}", 0, "WARNING")
 
     for trigger in triggers:
         if migration_progress["cancel_requested"]:
@@ -532,16 +547,19 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
                         if isinstance(v, str) and "TRIGGER" in v.upper():
                             return v
                 return ""
-        trigger_ddl = clean_sql_definer(execute_with_retry(aws_config, db_name, get_trigger_ddl))
-        if not dry_run:
-            def create_trigger(conn):
-                with conn.cursor() as cursor:
-                    cursor.execute(f"DROP TRIGGER IF EXISTS `{trigger}`")
-                    cursor.execute(trigger_ddl)
-            op_start = time.time()
-            execute_with_retry(azure_config, db_name, create_trigger)
-            log_migration(db_name, trigger, "Copy Trigger", time.time() - op_start, "SUCCESS")
-        update_object_checkpoint(db_name, "triggers", trigger)
+        try:
+            trigger_ddl = clean_sql_definer(execute_with_retry(aws_config, db_name, get_trigger_ddl))
+            if not dry_run:
+                def create_trigger(conn):
+                    with conn.cursor() as cursor:
+                        cursor.execute(f"DROP TRIGGER IF EXISTS `{trigger}`")
+                        cursor.execute(trigger_ddl)
+                op_start = time.time()
+                execute_with_retry(azure_config, db_name, create_trigger)
+                log_migration(db_name, trigger, "Copy Trigger", time.time() - op_start, "SUCCESS")
+            update_object_checkpoint(db_name, "triggers", trigger)
+        except Exception as ex:
+            log_migration(db_name, trigger, f"Warning: Trigger copy failed: {ex}", 0, "WARNING")
 
     for event in events:
         if migration_progress["cancel_requested"]:
@@ -550,16 +568,19 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
             with conn.cursor() as cursor:
                 cursor.execute(f"SHOW CREATE EVENT `{event}`")
                 return cursor.fetchone()["Create Event"]
-        event_ddl = clean_sql_definer(execute_with_retry(aws_config, db_name, get_event_ddl))
-        if not dry_run:
-            def create_event(conn):
-                with conn.cursor() as cursor:
-                    cursor.execute(f"DROP EVENT IF EXISTS `{event}`")
-                    cursor.execute(event_ddl)
-            op_start = time.time()
-            execute_with_retry(azure_config, db_name, create_event)
-            log_migration(db_name, event, "Copy Event", time.time() - op_start, "SUCCESS")
-        update_object_checkpoint(db_name, "events", event)
+        try:
+            event_ddl = clean_sql_definer(execute_with_retry(aws_config, db_name, get_event_ddl))
+            if not dry_run:
+                def create_event(conn):
+                    with conn.cursor() as cursor:
+                        cursor.execute(f"DROP EVENT IF EXISTS `{event}`")
+                        cursor.execute(event_ddl)
+                op_start = time.time()
+                execute_with_retry(azure_config, db_name, create_event)
+                log_migration(db_name, event, "Copy Event", time.time() - op_start, "SUCCESS")
+            update_object_checkpoint(db_name, "events", event)
+        except Exception as ex:
+            log_migration(db_name, event, f"Warning: Event copy failed: {ex}", 0, "WARNING")
 
 def run_migration_process(aws_config, azure_config, databases, dry_run=False, resume=False, batch_size=5000, verify_only=False, fix_mismatches=False, exclude_directus=True):
     """
@@ -692,6 +713,9 @@ def run_migration_process(aws_config, azure_config, databases, dry_run=False, re
                         break
                         
                     log_migration(db_name, None, f"Syncing delta: {len(active_tbls)} tables, {len(active_trigs)} triggers...", 0, "START")
+                    for t in active_tbls:
+                        if t in checkpoint["completed_tables"]:
+                            checkpoint["completed_tables"].remove(t)
                     sync_database_objects(aws_config, azure_config, db_name, active_tbls, active_vws, active_procs, active_funcs, active_trigs, active_evts, dry_run, resume, batch_size, checkpoint, selected_tables, start_time)
 
             else:
