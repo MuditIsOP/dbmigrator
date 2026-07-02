@@ -358,15 +358,20 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
                 log_migration(db_name, table, "[DRY RUN] Create Table Schema on Azure", 0, "SUCCESS")
 
     # Step 3: Copy Data in Batches
-    for table in tables:
+    progress_lock = threading.Lock()
+    checkpoint_lock = threading.Lock()
+
+    def copy_table_data(table):
         if migration_progress["cancel_requested"]:
-            raise MigrationCancelled()
+            return
             
         if resume and table in checkpoint.get("completed_tables", []):
-            continue
-        
-        migration_progress["current_table"] = table
-        
+            return
+            
+        with progress_lock:
+            migration_progress["current_table"] = table
+
+        # Get primary key
         def get_pk(conn):
             return fetch_table_primary_key(conn, db_name, table)
         pks = execute_with_retry(aws_config, db_name, get_pk)
@@ -422,9 +427,11 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
             has_data = execute_with_retry(azure_config, db_name, check_azure_has_data)
             if has_data:
                 log_migration(db_name, table, "Table has no primary/unique key for catch-up boundaries. Bypassing append to prevent duplicates.", 0, "SUCCESS")
-                update_table_checkpoint(db_name, table)
-                migration_progress["tables_copied"] += 1
-                continue
+                with checkpoint_lock:
+                    update_table_checkpoint(db_name, table)
+                with progress_lock:
+                    migration_progress["tables_copied"] += 1
+                return
 
         offset = 0
         last_pk_values = None
@@ -456,10 +463,11 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
             last_pk_values = execute_with_retry(azure_config, db_name, get_matched_pk)
             # Save the starting max PK for delta verifications
             if last_pk_values:
-                update_checkpoint_meta(db_name, "starting_max_pks", table, last_pk_values)
-                if "starting_max_pks" not in checkpoint:
-                    checkpoint["starting_max_pks"] = {}
-                checkpoint["starting_max_pks"][table] = last_pk_values
+                with checkpoint_lock:
+                    update_checkpoint_meta(db_name, "starting_max_pks", table, last_pk_values)
+                    if "starting_max_pks" not in checkpoint:
+                        checkpoint["starting_max_pks"] = {}
+                    checkpoint["starting_max_pks"][table] = last_pk_values
                 
             def get_delta_count(conn):
                 with conn.cursor() as cursor:
@@ -489,9 +497,6 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
                 return get_table_row_count(conn, db_name, table)
             row_count = execute_with_retry(aws_config, db_name, get_count)
             
-        migration_progress["current_table_rows_total"] = row_count
-        migration_progress["current_table_rows_copied"] = 0
-        
         if row_count == 0:
             log_migration(db_name, table, "Table is Up to Date (0 delta rows to copy)" if incremental_sync else "Copy Table Data (Empty Table)", 0, "SUCCESS")
             if not dry_run and not incremental_sync:
@@ -508,14 +513,16 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
                             cursor.execute(f"ALTER TABLE `{table}` AUTO_INCREMENT = {auto_inc}")
                     execute_with_retry(azure_config, db_name, set_auto_inc)
                     
-            update_table_checkpoint(db_name, table)
-            migration_progress["tables_copied"] += 1
-            continue
+            with checkpoint_lock:
+                update_table_checkpoint(db_name, table)
+            with progress_lock:
+                migration_progress["tables_copied"] += 1
+            return
         
-        def build_select_query():
+        def build_select_query(current_offset, current_last_pk):
             if pks:
                 pk_order = ", ".join([f"`{pk}`" for pk in pks])
-                if last_pk_values:
+                if current_last_pk:
                     conds = []
                     for idx in range(len(pks)):
                         sub_conds = []
@@ -527,21 +534,22 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
                     params = []
                     for idx in range(len(pks)):
                         for prev_idx in range(idx):
-                            params.append(last_pk_values[prev_idx])
-                        params.append(last_pk_values[idx])
+                            params.append(current_last_pk[prev_idx])
+                        params.append(current_last_pk[idx])
                         
                     where_clause = " OR ".join(conds)
                     return f"SELECT * FROM `{table}` WHERE {where_clause} ORDER BY {pk_order} LIMIT {batch_size}", params
                 else:
                     return f"SELECT * FROM `{table}` ORDER BY {pk_order} LIMIT {batch_size}", []
             else:
-                return f"SELECT * FROM `{table}` LIMIT {batch_size} OFFSET {offset}", []
+                return f"SELECT * FROM `{table}` LIMIT {batch_size} OFFSET {current_offset}", []
 
+        current_last_pk = last_pk_values
         while offset < row_count:
             if migration_progress["cancel_requested"]:
                 raise MigrationCancelled()
                 
-            select_sql, select_params = build_select_query()
+            select_sql, select_params = build_select_query(offset, current_last_pk)
             
             def fetch_batch(conn):
                 with conn.cursor() as cursor:
@@ -586,43 +594,22 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
             log_performance(db_name, table, "Batch Copy (Read)", fetch_duration, f"Fetched {len(rows)} rows")
 
             offset += len(rows)
-            migration_progress["rows_copied"] += len(rows)
-            migration_progress["current_table_rows_copied"] = offset
-            
-            elapsed = time.time() - start_time
-            if elapsed > 0:
-                rows_copied = int(migration_progress["rows_copied"])
-                rows_total  = int(migration_progress["rows_total"])
-                speed = rows_copied / elapsed
-                migration_progress["speed_rps"] = speed
-                remaining = max(rows_total - rows_copied, 0)
-                migration_progress["eta_seconds"] = remaining / speed if speed > 0 else 0
-                
             if pks:
                 last_row = rows[-1]
-                last_pk_values = [last_row[pk] for pk in pks]
+                current_last_pk = [last_row[pk] for pk in pks]
+                
+            with progress_lock:
+                migration_progress["rows_copied"] += len(rows)
+                elapsed = time.time() - start_time
+                if elapsed > 0:
+                    rows_copied = int(migration_progress["rows_copied"])
+                    rows_total  = int(migration_progress["rows_total"])
+                    speed = rows_copied / elapsed
+                    migration_progress["speed_rps"] = speed
+                    remaining = max(rows_total - rows_copied, 0)
+                    migration_progress["eta_seconds"] = remaining / speed if speed > 0 else 0
 
-        if not dry_run:
-            def get_auto_inc(conn):
-                with conn.cursor() as cursor:
-                    cursor.execute("SELECT AUTO_INCREMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s", (db_name, table))
-                    res = cursor.fetchone()
-                    return res.get("AUTO_INCREMENT") if res else None
-            
-            auto_inc = execute_with_retry(aws_config, db_name, get_auto_inc)
-            if auto_inc:
-                def set_auto_inc(conn):
-                    with conn.cursor() as cursor:
-                        cursor.execute(f"ALTER TABLE `{table}` AUTO_INCREMENT = {auto_inc}")
-                execute_with_retry(azure_config, db_name, set_auto_inc)
-
-            def analyze_table_azure(conn):
-                with conn.cursor() as cursor:
-                    cursor.execute(f"ANALYZE TABLE `{table}`")
-            op_start = time.time()
-            execute_with_retry(azure_config, db_name, analyze_table_azure)
-            log_performance(db_name, table, "Analyze Table Statistics", time.time() - op_start, "SUCCESS")
-
+        # Verification post-copy per table
         if not dry_run:
             def check_azure_count(conn):
                 starting_max_pk = checkpoint.get("starting_max_pks", {}).get(table)
@@ -646,18 +633,37 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
                         return res["count_val"] if res else 0
                 else:
                     return get_table_row_count(conn, db_name, table)
-            az_count = execute_with_retry(azure_config, db_name, check_azure_count)
-            
-            if az_count != row_count:
-                err_msg = f"Row count mismatch! Source: {row_count}, Dest: {az_count}"
+                    
+            az_row_count = execute_with_retry(azure_config, db_name, check_azure_count)
+            if az_row_count != row_count:
+                err_msg = f"Row count mismatch! Source: {row_count}, Dest: {az_row_count}"
                 log_error(db_name, table, "Row Count Validation", 0, "FAILED", err_msg)
                 raise ValueError(f"Table data copy verification failed for table {table}: {err_msg}")
             else:
                 log_verification(db_name, table, "Row Count Validation", 0, "SUCCESS")
+                
+            def analyze_table_azure(conn):
+                with conn.cursor() as cursor:
+                    cursor.execute(f"ANALYZE TABLE `{table}`")
+            
+            op_start = time.time()
+            execute_with_retry(azure_config, db_name, analyze_table_azure)
+            log_performance(db_name, table, "Analyze Table Statistics", time.time() - op_start, "SUCCESS")
+            log_migration(db_name, table, "Table Copy Completed & Verified", 0, "SUCCESS")
+            
+        with checkpoint_lock:
+            update_table_checkpoint(db_name, table)
+        with progress_lock:
+            migration_progress["tables_copied"] += 1
 
-        update_table_checkpoint(db_name, table)
-        migration_progress["tables_copied"] += 1
-        log_migration(db_name, table, "Table Copy Completed & Verified", 0, "SUCCESS")
+    from concurrent.futures import ThreadPoolExecutor
+    max_workers = 4
+    log_migration(db_name, None, f"Starting parallel data copy with {max_workers} worker threads...", 0, "SUCCESS")
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(copy_table_data, table): table for table in tables}
+        for future in futures:
+            future.result()
 
     # Step 4: Add Foreign Keys on Azure
     if all_fk_alters:
