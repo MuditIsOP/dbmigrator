@@ -399,7 +399,8 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
                             
                         col_names_str = ", ".join([f"`{c}`" for c in columns])
                         placeholders = ", ".join(["%s"] * len(columns))
-                        insert_sql = f"INSERT INTO `{table}` ({col_names_str}) VALUES ({placeholders})"
+                        insert_verb = "INSERT IGNORE" if incremental_sync else "INSERT"
+                        insert_sql = f"{insert_verb} INTO `{table}` ({col_names_str}) VALUES ({placeholders})"
                         
                         insert_data = [tuple(row[col] for col in columns) for row in rows]
                         cursor.executemany(insert_sql, insert_data)
