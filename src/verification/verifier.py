@@ -366,24 +366,28 @@ def verify_database(aws_config, azure_config, db_name, selected_tables=None, exc
                     
                 checksum_sql = calculate_table_checksum_sql(table_columns)
                 
-                # Fetch AWS checksum
-                with aws_conn.cursor() as cur:
-                    cur.execute(f"{checksum_sql} `{aws_table_name}`{aws_where}", aws_params)
-                    aws_checksum = cur.fetchone()["checksum"]
+                try:
+                    # Fetch AWS checksum
+                    with aws_conn.cursor() as cur:
+                        cur.execute(f"{checksum_sql} `{aws_table_name}`{aws_where}", aws_params)
+                        aws_checksum = cur.fetchone()["checksum"]
+                        
+                    # Fetch Azure checksum
+                    with az_conn.cursor() as cur:
+                        cur.execute(f"{checksum_sql} `{az_table_name}`{aws_where}", aws_params)
+                        az_checksum = cur.fetchone()["checksum"]
+                        
+                    aws_tbl["checksum"] = aws_checksum
+                    az_tbl["checksum"] = az_checksum
                     
-                # Fetch Azure checksum
-                with az_conn.cursor() as cur:
-                    cur.execute(f"{checksum_sql} `{az_table_name}`{aws_where}", aws_params)
-                    az_checksum = cur.fetchone()["checksum"]
-                    
-                aws_tbl["checksum"] = aws_checksum
-                az_tbl["checksum"] = az_checksum
-                
-                if aws_checksum != az_checksum:
-                    mismatches.append(f"Table '{aws_table_name}' data checksum mismatch! AWS: {aws_checksum}, Azure: {az_checksum} (Data integrity compromise)")
-                    log_error(db_name, aws_table_name, "Data Checksum", 0, "FAILED", f"AWS Hash={aws_checksum}, Azure Hash={az_checksum}")
-                else:
-                    log_verification(db_name, aws_table_name, "Data Checksum Match", 0, f"Checksum = {aws_checksum}")
+                    if aws_checksum != az_checksum:
+                        mismatches.append(f"Table '{aws_table_name}' data checksum mismatch! AWS: {aws_checksum}, Azure: {az_checksum} (Data integrity compromise)")
+                        log_error(db_name, aws_table_name, "Data Checksum", 0, "FAILED", f"AWS Hash={aws_checksum}, Azure Hash={az_checksum}")
+                    else:
+                        log_verification(db_name, aws_table_name, "Data Checksum Match", 0, f"Checksum = {aws_checksum}")
+                except Exception as e:
+                    mismatches.append(f"Table '{aws_table_name}' checksum execution failed: {e}")
+                    log_error(db_name, aws_table_name, "Data Checksum", 0, "FAILED", f"Checksum execution error: {e}")
             else:
                 log_verification(db_name, aws_table_name, "Data Checksum Match", 0, "SUCCESS (Up to date / No delta rows)" if incremental_sync else "SUCCESS (Empty Table)")
 
