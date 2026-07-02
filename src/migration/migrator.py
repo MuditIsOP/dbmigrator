@@ -248,6 +248,13 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
     """Internal helper to execute schema, data copy, and object replication for specified lists."""
     global migration_progress
     
+    if incremental_sync:
+        views = []
+        procedures = []
+        functions = []
+        triggers = []
+        events = []
+        
     # Step 1: Create Database on Azure
     op_start = time.time()
     def get_db_meta(conn):

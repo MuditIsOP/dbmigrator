@@ -219,19 +219,20 @@ def verify_database(aws_config, azure_config, db_name, selected_tables=None, exc
             if extra_in_az:
                 mismatches.append(f"Unexpected tables in Azure: {', '.join(extra_in_az)}")
                 
-        # Compare other object lists (case-insensitively)
-        for obj_type in ["views", "procedures", "functions", "triggers", "events"]:
-            aws_objs = set(aws_meta[obj_type])
-            az_objs = set(az_meta[obj_type])
-            
-            aws_objs_lower = {o.lower() for o in aws_objs}
-            az_objs_lower = {o.lower() for o in az_objs}
-            
-            if aws_objs_lower != az_objs_lower:
-                missing = {o for o in aws_objs if o.lower() not in az_objs_lower}
-                extra = {o for o in az_objs if o.lower() not in aws_objs_lower}
-                if missing or extra:
-                    mismatches.append(f"{obj_type.capitalize()} mismatch. Missing: {missing}. Extra: {extra}")
+        if not incremental_sync:
+            # Compare other object lists (case-insensitively)
+            for obj_type in ["views", "procedures", "functions", "triggers", "events"]:
+                aws_objs = set(aws_meta[obj_type])
+                az_objs = set(az_meta[obj_type])
+                
+                aws_objs_lower = {o.lower() for o in aws_objs}
+                az_objs_lower = {o.lower() for o in az_objs}
+                
+                if aws_objs_lower != az_objs_lower:
+                    missing = {o for o in aws_objs if o.lower() not in az_objs_lower}
+                    extra = {o for o in az_objs if o.lower() not in aws_objs_lower}
+                    if missing or extra:
+                        mismatches.append(f"{obj_type.capitalize()} mismatch. Missing: {missing}. Extra: {extra}")
 
         # Map tables for case-insensitive lookup
         aws_table_map = {t.lower(): t for t in aws_tables}
@@ -250,6 +251,23 @@ def verify_database(aws_config, azure_config, db_name, selected_tables=None, exc
             # Row Counts
             starting_max_pk = (starting_max_pks or {}).get(aws_table_name)
             pks = aws_tbl["indexes"].get("PRIMARY", {}).get("columns", [])
+            
+            if not pks:
+                # 1. Look for auto_increment column
+                for col_name, col_meta in aws_tbl["columns"].items():
+                    if "auto_increment" in col_meta.get("extra", "").lower():
+                        pks = [col_name]
+                        break
+            if not pks:
+                # 2. Look for unique indexes
+                for idx_name, idx_meta in aws_tbl["indexes"].items():
+                    if idx_meta.get("unique"):
+                        pks = idx_meta.get("columns", [])
+                        break
+            if not pks:
+                # 3. Look for 'id' column
+                if "id" in aws_tbl["columns"]:
+                    pks = ["id"]
             
             aws_where = ""
             aws_params = []
