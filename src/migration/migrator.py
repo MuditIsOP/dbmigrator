@@ -384,6 +384,18 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
                     return cursor.fetchone() is not None
             table_exists_on_azure = execute_with_retry(azure_config, db_name, check_table_exists)
 
+        if incremental_sync and table_exists_on_azure and not pks:
+            def check_azure_has_data(conn):
+                with conn.cursor() as cursor:
+                    cursor.execute(f"SELECT 1 FROM `{table}` LIMIT 1")
+                    return cursor.fetchone() is not None
+            has_data = execute_with_retry(azure_config, db_name, check_azure_has_data)
+            if has_data:
+                log_migration(db_name, table, "Table has no primary/unique key for catch-up boundaries. Bypassing append to prevent duplicates.", 0, "SUCCESS")
+                update_table_checkpoint(db_name, table)
+                migration_progress["tables_copied"] += 1
+                continue
+
         offset = 0
         last_pk_values = None
         
@@ -851,116 +863,128 @@ def run_migration_process(aws_config, azure_config, databases, dry_run=False, re
             
             execute_with_retry(aws_config, db_name, count_stats)
 
+        db_failures = []
         for db_name in databases.keys():
-            migration_progress["database"] = db_name
-            selected_tables = databases[db_name]
-            checkpoint = get_db_checkpoint(db_name) if resume else {"completed_tables": [], "completed_objects": {"views": [], "functions": [], "procedures": [], "triggers": [], "events": []}}
-            
-            def get_db_objects(conn):
-                with conn.cursor() as cursor:
-                    cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = %s AND table_type = 'BASE TABLE'", (db_name,))
-                    tables = [r["table_name"] for r in cursor.fetchall()]
-                    cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = %s AND table_type = 'VIEW'", (db_name,))
-                    views = [r["table_name"] for r in cursor.fetchall()]
-                    cursor.execute("SELECT routine_name FROM information_schema.routines WHERE routine_schema = %s AND routine_type = 'PROCEDURE'", (db_name,))
-                    procedures = [r["routine_name"] for r in cursor.fetchall()]
-                    cursor.execute("SELECT routine_name FROM information_schema.routines WHERE routine_schema = %s AND routine_type = 'FUNCTION'", (db_name,))
-                    functions = [r["routine_name"] for r in cursor.fetchall()]
-                    cursor.execute("SELECT trigger_name, event_object_table FROM information_schema.triggers WHERE trigger_schema = %s", (db_name,))
-                    triggers_meta = [(r["trigger_name"], r["event_object_table"]) for r in cursor.fetchall()]
-                    cursor.execute("SELECT event_name FROM information_schema.events WHERE event_schema = %s", (db_name,))
-                    events = [r["event_name"] for r in cursor.fetchall()]
-                    return tables, views, procedures, functions, triggers_meta, events
-            
-            tables, views, procedures, functions, triggers_meta, events = execute_with_retry(aws_config, db_name, get_db_objects)
-
-            if exclude_directus:
-                tables = [t for t in tables if not t.lower().startswith("directus_")]
-                triggers_meta = [t for t in triggers_meta if not t[1].lower().startswith("directus_")]
-
-            if selected_tables:
-                tables = [t for t in tables if t in selected_tables]
-                triggers = [t[0] for t in triggers_meta if t[1] in selected_tables]
-            else:
-                triggers = [t[0] for t in triggers_meta]
-
-            verification_ok = True
-            ver_details = "All verification steps completed."
-
-            if verify_only:
-                log_migration(db_name, None, "Verify Only mode active. Skipping schema creation and data copying.", 0, "SUCCESS")
-            elif fix_mismatches:
-                log_migration(db_name, None, "Fix Mismatches (Auto-Healing Loop) active.", 0, "START")
-                attempt = 0
-                max_attempts = 3
-                object_retries = {}
-                persistent_failures = set()
+            try:
+                migration_progress["database"] = db_name
+                selected_tables = databases[db_name]
+                checkpoint = get_db_checkpoint(db_name) if resume else {"completed_tables": [], "completed_objects": {"views": [], "functions": [], "procedures": [], "triggers": [], "events": []}}
                 
-                from src.verification.verifier import verify_database
+                def get_db_objects(conn):
+                    with conn.cursor() as cursor:
+                        cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = %s AND table_type = 'BASE TABLE'", (db_name,))
+                        tables = [r["table_name"] for r in cursor.fetchall()]
+                        cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = %s AND table_type = 'VIEW'", (db_name,))
+                        views = [r["table_name"] for r in cursor.fetchall()]
+                        cursor.execute("SELECT routine_name FROM information_schema.routines WHERE routine_schema = %s AND routine_type = 'PROCEDURE'", (db_name,))
+                        procedures = [r["routine_name"] for r in cursor.fetchall()]
+                        cursor.execute("SELECT routine_name FROM information_schema.routines WHERE routine_schema = %s AND routine_type = 'FUNCTION'", (db_name,))
+                        functions = [r["routine_name"] for r in cursor.fetchall()]
+                        cursor.execute("SELECT trigger_name, event_object_table FROM information_schema.triggers WHERE trigger_schema = %s", (db_name,))
+                        triggers_meta = [(r["trigger_name"], r["event_object_table"]) for r in cursor.fetchall()]
+                        cursor.execute("SELECT event_name FROM information_schema.events WHERE event_schema = %s", (db_name,))
+                        events = [r["event_name"] for r in cursor.fetchall()]
+                        return tables, views, procedures, functions, triggers_meta, events
                 
-                while attempt < max_attempts:
-                    attempt += 1
-                    log_migration(db_name, None, f"--- Starting Auto-Healing Audit Loop (Attempt {attempt}/{max_attempts}) ---", 0, "START")
+                tables, views, procedures, functions, triggers_meta, events = execute_with_retry(aws_config, db_name, get_db_objects)
+
+                if exclude_directus:
+                    tables = [t for t in tables if not t.lower().startswith("directus_")]
+                    triggers_meta = [t for t in triggers_meta if not t[1].lower().startswith("directus_")]
+
+                if selected_tables:
+                    tables = [t for t in tables if t in selected_tables]
+                    triggers = [t[0] for t in triggers_meta if t[1] in selected_tables]
+                else:
+                    triggers = [t[0] for t in triggers_meta]
+
+                verification_ok = True
+                ver_details = "All verification steps completed."
+
+                if verify_only:
+                    log_migration(db_name, None, "Verify Only mode active. Skipping schema creation and data copying.", 0, "SUCCESS")
+                elif fix_mismatches:
+                    log_migration(db_name, None, "Fix Mismatches (Auto-Healing Loop) active.", 0, "START")
+                    attempt = 0
+                    max_attempts = 3
+                    object_retries = {}
+                    persistent_failures = set()
                     
-                    audit_ok, audit_details = verify_database(aws_config, azure_config, db_name, selected_tables, exclude_directus)
-                    verification_ok, ver_details = audit_ok, audit_details
+                    from src.verification.verifier import verify_database
                     
-                    if audit_ok:
-                        log_migration(db_name, None, f"All database objects match 100% on Attempt {attempt}! Delta sync completed.", 0, "SUCCESS")
-                        if not dry_run:
-                            clear_db_checkpoint(db_name)
-                        break
-                    
-                    failed_tbls, failed_trigs, failed_vws, failed_procs, failed_funcs, failed_evts = parse_mismatches(audit_details)
-                    
-                    current_failed = set(failed_tbls + failed_trigs + failed_vws + failed_procs + failed_funcs + failed_evts)
-                    for obj in current_failed:
-                        object_retries[obj] = object_retries.get(obj, 0) + 1
-                        if object_retries[obj] >= max_attempts:
-                            persistent_failures.add(obj)
+                    while attempt < max_attempts:
+                        attempt += 1
+                        log_migration(db_name, None, f"--- Starting Auto-Healing Audit Loop (Attempt {attempt}/{max_attempts}) ---", 0, "START")
+                        
+                        audit_ok, audit_details = verify_database(aws_config, azure_config, db_name, selected_tables, exclude_directus)
+                        verification_ok, ver_details = audit_ok, audit_details
+                        
+                        if audit_ok:
+                            log_migration(db_name, None, f"All database objects match 100% on Attempt {attempt}! Delta sync completed.", 0, "SUCCESS")
+                            if not dry_run:
+                                clear_db_checkpoint(db_name)
+                            break
+                        
+                        failed_tbls, failed_trigs, failed_vws, failed_procs, failed_funcs, failed_evts = parse_mismatches(audit_details)
+                        
+                        current_failed = set(failed_tbls + failed_trigs + failed_vws + failed_procs + failed_funcs + failed_evts)
+                        for obj in current_failed:
+                            object_retries[obj] = object_retries.get(obj, 0) + 1
+                            if object_retries[obj] >= max_attempts:
+                                persistent_failures.add(obj)
+                                
+                        active_tbls = [t for t in failed_tbls if t in tables and t not in persistent_failures]
+                        active_trigs = [t for t in failed_trigs if t in triggers and t not in persistent_failures]
+                        active_vws = [v for v in failed_vws if v in views and v not in persistent_failures]
+                        active_procs = [p for p in failed_procs if p in procedures and p not in persistent_failures]
+                        active_funcs = [f for f in failed_funcs if f in functions and f not in persistent_failures]
+                        active_evts = [e for e in failed_evts if e in events and e not in persistent_failures]
+                        
+                        if persistent_failures:
+                            log_migration(db_name, None, f"Warning: The following objects persistently failed after {max_attempts} retries and will be reported: {', '.join(persistent_failures)}", 0, "WARNING")
                             
-                    active_tbls = [t for t in failed_tbls if t in tables and t not in persistent_failures]
-                    active_trigs = [t for t in failed_trigs if t in triggers and t not in persistent_failures]
-                    active_vws = [v for v in failed_vws if v in views and v not in persistent_failures]
-                    active_procs = [p for p in failed_procs if p in procedures and p not in persistent_failures]
-                    active_funcs = [f for f in failed_funcs if f in functions and f not in persistent_failures]
-                    active_evts = [e for e in failed_evts if e in events and e not in persistent_failures]
+                        if not (active_tbls or active_trigs or active_vws or active_procs or active_funcs or active_evts):
+                            log_migration(db_name, None, "No further retryable delta objects remaining to sync.", 0, "WARNING")
+                            break
+                            
+                        log_migration(db_name, None, f"Syncing delta: {len(active_tbls)} tables, {len(active_trigs)} triggers...", 0, "START")
+                        for t in active_tbls:
+                            if t in checkpoint["completed_tables"]:
+                                checkpoint["completed_tables"].remove(t)
+                        sync_database_objects(aws_config, azure_config, db_name, active_tbls, active_vws, active_procs, active_funcs, active_trigs, active_evts, dry_run, resume, batch_size, checkpoint, selected_tables, start_time, incremental_sync)
+
+                else:
+                    # Standard Migration Pass
+                    sync_database_objects(aws_config, azure_config, db_name, tables, views, procedures, functions, triggers, events, dry_run, resume, batch_size, checkpoint, selected_tables, start_time, incremental_sync)
+
+                # Final Verification Pass for standard or verify_only runs
+                if not dry_run and not fix_mismatches:
+                    from src.verification.verifier import verify_database
+                    verify_start = time.time()
+                    starting_max_pks = checkpoint.get("starting_max_pks") if checkpoint else None
+                    verification_ok, ver_details = verify_database(aws_config, azure_config, db_name, selected_tables, exclude_directus, incremental_sync, starting_max_pks)
+                    log_verification(db_name, None, "Full Database Verification Run", time.time() - verify_start, "SUCCESS" if verification_ok else "FAILED")
                     
-                    if persistent_failures:
-                        log_migration(db_name, None, f"Warning: The following objects persistently failed after {max_attempts} retries and will be reported: {', '.join(persistent_failures)}", 0, "WARNING")
-                        
-                    if not (active_tbls or active_trigs or active_vws or active_procs or active_funcs or active_evts):
-                        log_migration(db_name, None, "No further retryable delta objects remaining to sync.", 0, "WARNING")
-                        break
-                        
-                    log_migration(db_name, None, f"Syncing delta: {len(active_tbls)} tables, {len(active_trigs)} triggers...", 0, "START")
-                    for t in active_tbls:
-                        if t in checkpoint["completed_tables"]:
-                            checkpoint["completed_tables"].remove(t)
-                    sync_database_objects(aws_config, azure_config, db_name, active_tbls, active_vws, active_procs, active_funcs, active_trigs, active_evts, dry_run, resume, batch_size, checkpoint, selected_tables, start_time, incremental_sync)
-
-            else:
-                # Standard Migration Pass
-                sync_database_objects(aws_config, azure_config, db_name, tables, views, procedures, functions, triggers, events, dry_run, resume, batch_size, checkpoint, selected_tables, start_time, incremental_sync)
-
-            # Final Verification Pass for standard or verify_only runs
-            if not dry_run and not fix_mismatches:
-                from src.verification.verifier import verify_database
-                verify_start = time.time()
-                starting_max_pks = checkpoint.get("starting_max_pks") if checkpoint else None
-                verification_ok, ver_details = verify_database(aws_config, azure_config, db_name, selected_tables, exclude_directus, incremental_sync, starting_max_pks)
-                log_verification(db_name, None, "Full Database Verification Run", time.time() - verify_start, "SUCCESS" if verification_ok else "FAILED")
+                    if not verification_ok:
+                        raise ValueError(f"Post-migration verification failed for database {db_name}. Details: {ver_details[:300]}")
                 
-                if not verification_ok:
-                    raise ValueError(f"Post-migration verification failed for database {db_name}. Details: {ver_details[:300]}")
-            
-            if not dry_run and not verify_only and verification_ok:
-                clear_db_checkpoint(db_name)
+                if not dry_run and not verify_only and verification_ok:
+                    clear_db_checkpoint(db_name)
+            except Exception as db_err:
+                log_error(db_name, None, "Database Migration Loop", 0, "FAILED", db_err)
+                db_failures.append((db_name, str(db_err)))
 
         duration_total = time.time() - start_time
-        generate_report(databases, start_time, time.time(), dry_run, None, verification_ok, ver_details)
-        migration_progress["status"] = "SUCCESS"
-        log_migration(None, None, "Migration Process Completed Successfully", duration_total, "SUCCESS")
+        if db_failures:
+            err_msg = "; ".join([f"{db}: {err}" for db, err in db_failures])
+            migration_progress["status"] = "FAILED"
+            migration_progress["error_message"] = err_msg
+            log_migration(None, None, f"Migration Process Completed with failures: {err_msg}", duration_total, "FAILED")
+            generate_report(databases, start_time, time.time(), dry_run, err_msg, False, f"Failures: {err_msg}")
+        else:
+            generate_report(databases, start_time, time.time(), dry_run, None, True, "All databases migrated and verified successfully.")
+            migration_progress["status"] = "SUCCESS"
+            log_migration(None, None, "Migration Process Completed Successfully", duration_total, "SUCCESS")
         
     except MigrationCancelled as e:
         migration_progress["status"] = "CANCELLED"
