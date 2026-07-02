@@ -183,6 +183,67 @@ def get_azure_max_pk(conn, db_name, table_name, pks):
     except Exception:
         return None
 
+def find_aws_matched_pk(aws_conn, az_conn, db_name, table, pks, aws_columns):
+    if not pks:
+        return None
+    try:
+        # 1. Get the last row on Azure
+        pk_desc_order = ", ".join([f"`{pk}` DESC" for pk in pks])
+        with az_conn.cursor() as az_cur:
+            az_cur.execute(f"SELECT * FROM `{db_name}`.`{table}` ORDER BY {pk_desc_order} LIMIT 1")
+            last_az_row = az_cur.fetchone()
+            if not last_az_row:
+                return None
+
+        # 2. Find this row on AWS RDS
+        match_cols = []
+        for col_name, col_meta in aws_columns.items():
+            if "auto_increment" in col_meta.get("extra", "").lower():
+                continue
+            d_type = col_meta.get("data_type", "").lower()
+            if d_type in ("geometry", "point", "linestring", "polygon", "blob", "longblob", "mediumblob", "tinyblob", "json", "longtext"):
+                continue
+            if col_name in last_az_row:
+                match_cols.append(col_name)
+
+        if match_cols:
+            conds = []
+            params = []
+            for col in match_cols:
+                val = last_az_row[col]
+                if val is None:
+                    conds.append(f"`{col}` IS NULL")
+                else:
+                    conds.append(f"`{col}` = %s")
+                    params.append(val)
+                    
+            with aws_conn.cursor() as aws_cur:
+                aws_cur.execute(f"SELECT {', '.join([f'`{pk}`' for pk in pks])} FROM `{db_name}`.`{table}` WHERE {' AND '.join(conds)} LIMIT 1", params)
+                res = aws_cur.fetchone()
+                if res:
+                    return [res[pk] for pk in pks]
+
+        # Fallback: Match by PK columns directly
+        conds = []
+        params = []
+        for pk in pks:
+            val = last_az_row.get(pk)
+            if val is None:
+                conds.append(f"`{pk}` IS NULL")
+            else:
+                conds.append(f"`{pk}` = %s")
+                params.append(val)
+                
+        with aws_conn.cursor() as aws_cur:
+            aws_cur.execute(f"SELECT {', '.join([f'`{pk}`' for pk in pks])} FROM `{db_name}`.`{table}` WHERE {' AND '.join(conds)} LIMIT 1", params)
+            res = aws_cur.fetchone()
+            if res:
+                return [res[pk] for pk in pks]
+    except Exception as e:
+        print(f"Error matching AWS PK for table {table}: {e}")
+        return None
+    return None
+
 def sync_database_objects(aws_config, azure_config, db_name, tables, views, procedures, functions, triggers, events, dry_run, resume, batch_size, checkpoint, selected_tables, start_time, incremental_sync=False):
     """Internal helper to execute schema, data copy, and object replication for specified lists."""
     global migration_progress
@@ -285,9 +346,30 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
         last_pk_values = None
         
         if incremental_sync and table_exists_on_azure and pks:
-            def get_az_max(conn):
+            def get_matched_pk(conn):
+                from src.services.db_client import get_connection
+                aws_temp_conn = None
+                try:
+                    aws_temp_conn = get_connection(aws_config, db_name)
+                    with aws_temp_conn.cursor() as cursor:
+                        cursor.execute("SELECT COLUMN_NAME, DATA_TYPE, EXTRA FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s", (db_name, table))
+                        cols = {}
+                        for r in cursor.fetchall():
+                            cols[r["COLUMN_NAME"]] = {
+                                "data_type": r["DATA_TYPE"],
+                                "extra": r["EXTRA"]
+                            }
+                    matched = find_aws_matched_pk(aws_temp_conn, conn, db_name, table, pks, cols)
+                    if matched:
+                        return matched
+                except Exception as e:
+                    print(f"Error resolving matched PK: {e}")
+                finally:
+                    if aws_temp_conn:
+                        aws_temp_conn.close()
                 return get_azure_max_pk(conn, db_name, table, pks)
-            last_pk_values = execute_with_retry(azure_config, db_name, get_az_max)
+                
+            last_pk_values = execute_with_retry(azure_config, db_name, get_matched_pk)
             # Save the starting max PK for delta verifications
             if last_pk_values:
                 update_checkpoint_meta(db_name, "starting_max_pks", table, last_pk_values)
