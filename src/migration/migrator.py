@@ -657,7 +657,7 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
             migration_progress["tables_copied"] += 1
 
     from concurrent.futures import ThreadPoolExecutor
-    max_workers = 4
+    max_workers = 70
     log_migration(db_name, None, f"Starting parallel data copy with {max_workers} worker threads...", 0, "SUCCESS")
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
