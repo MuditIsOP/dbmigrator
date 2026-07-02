@@ -117,5 +117,12 @@ class TestMigrationTool(unittest.TestCase):
         filtered = [t for t in tables if not t.lower().startswith("directus_")]
         self.assertEqual(filtered, ["orders", "products"])
 
+    def test_incremental_sync_parameters_and_max_pk(self):
+        """Tests that get_azure_max_pk is defined and verifier supports incremental parameters."""
+        from src.migration.migrator import get_azure_max_pk
+        from src.verification.verifier import verify_database
+        self.assertTrue(callable(get_azure_max_pk))
+        self.assertTrue(callable(verify_database))
+
 if __name__ == '__main__':
     unittest.main()

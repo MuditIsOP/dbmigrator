@@ -167,7 +167,7 @@ def calculate_table_checksum_sql(columns):
     checksum_sql = f"SELECT COALESCE(BIT_XOR(CAST(CONV(SUBSTRING(MD5({concat_expr}), 1, 16), 16, 10) AS UNSIGNED)), 0) AS checksum FROM"
     return checksum_sql
 
-def verify_database(aws_config, azure_config, db_name, selected_tables=None, exclude_directus=False):
+def verify_database(aws_config, azure_config, db_name, selected_tables=None, exclude_directus=False, incremental_sync=False, starting_max_pks=None):
     """
     Main verification entrypoint. Compares AWS RDS and Azure MySQL metadata.
     Returns (success_boolean, mismatch_details_string).
@@ -248,11 +248,31 @@ def verify_database(aws_config, azure_config, db_name, selected_tables=None, exc
             az_tbl = az_meta["tables"][az_table_name]
             
             # Row Counts
+            starting_max_pk = (starting_max_pks or {}).get(aws_table_name)
+            pks = aws_tbl["indexes"].get("PRIMARY", {}).get("columns", [])
+            
+            aws_where = ""
+            aws_params = []
+            if incremental_sync and starting_max_pk and pks:
+                conds = []
+                for idx in range(len(pks)):
+                    sub_conds = []
+                    for prev_idx in range(idx):
+                        sub_conds.append(f"`{pks[prev_idx]}` = %s")
+                    sub_conds.append(f"`{pks[idx]}` > %s")
+                    conds.append("(" + " AND ".join(sub_conds) + ")")
+                aws_params = []
+                for idx in range(len(pks)):
+                    for prev_idx in range(idx):
+                        aws_params.append(starting_max_pk[prev_idx])
+                    aws_params.append(starting_max_pk[idx])
+                aws_where = " WHERE " + " OR ".join(conds)
+                
             with aws_conn.cursor() as cur:
-                cur.execute(f"SELECT COUNT(*) as cnt FROM `{aws_table_name}`")
+                cur.execute(f"SELECT COUNT(*) as cnt FROM `{aws_table_name}`{aws_where}", aws_params)
                 aws_row_count = cur.fetchone()["cnt"]
             with az_conn.cursor() as cur:
-                cur.execute(f"SELECT COUNT(*) as cnt FROM `{az_table_name}`")
+                cur.execute(f"SELECT COUNT(*) as cnt FROM `{az_table_name}`{aws_where}", aws_params)
                 az_row_count = cur.fetchone()["cnt"]
                 
             aws_tbl["row_count"] = aws_row_count
@@ -330,12 +350,12 @@ def verify_database(aws_config, azure_config, db_name, selected_tables=None, exc
                 
                 # Fetch AWS checksum
                 with aws_conn.cursor() as cur:
-                    cur.execute(f"{checksum_sql} `{aws_table_name}`")
+                    cur.execute(f"{checksum_sql} `{aws_table_name}`{aws_where}", aws_params)
                     aws_checksum = cur.fetchone()["checksum"]
                     
                 # Fetch Azure checksum
                 with az_conn.cursor() as cur:
-                    cur.execute(f"{checksum_sql} `{az_table_name}`")
+                    cur.execute(f"{checksum_sql} `{az_table_name}`{aws_where}", aws_params)
                     az_checksum = cur.fetchone()["checksum"]
                     
                 aws_tbl["checksum"] = aws_checksum
@@ -347,7 +367,7 @@ def verify_database(aws_config, azure_config, db_name, selected_tables=None, exc
                 else:
                     log_verification(db_name, aws_table_name, "Data Checksum Match", 0, f"Checksum = {aws_checksum}")
             else:
-                log_verification(db_name, aws_table_name, "Data Checksum Match", 0, "SUCCESS (Empty Table)")
+                log_verification(db_name, aws_table_name, "Data Checksum Match", 0, "SUCCESS (Up to date / No delta rows)" if incremental_sync else "SUCCESS (Empty Table)")
 
         # Result report
         if mismatches:

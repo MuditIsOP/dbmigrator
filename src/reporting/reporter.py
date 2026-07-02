@@ -289,6 +289,10 @@ def generate_report(databases, start_time, end_time, dry_run, error_message=None
                 <div class="details-value">{"Yes" if dry_run else "No"}</div>
             </div>
             <div class="details-row">
+                <div class="details-label">Catch-Up Mode (Incremental)</div>
+                <div class="details-value">{"Yes" if migration_progress.get("incremental_sync") else "No"}</div>
+            </div>
+            <div class="details-row">
                 <div class="details-label">Verification Result</div>
                 <div class="details-value" style="color: {'var(--success)' if verification_passed else 'var(--danger)'}; font-weight: 700;">{report_data["verification_result"]}</div>
             </div>

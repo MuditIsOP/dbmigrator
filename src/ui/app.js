@@ -40,6 +40,7 @@ const chkResume = document.getElementById("chk-resume");
 const chkVerifyOnly = document.getElementById("chk-verify-only");
 const chkFixMismatches = document.getElementById("chk-fix-mismatches");
 const chkExcludeDirectus = document.getElementById("chk-exclude-directus");
+const chkIncrementalSync = document.getElementById("chk-incremental-sync");
 const btnStartMigration = document.getElementById("btn-start-migration");
 const btnCancelMigration = document.getElementById("btn-cancel-migration");
 
@@ -98,6 +99,30 @@ function setupEventListeners() {
     
     btnStartMigration.addEventListener("click", () => startMigration(false));
     btnCancelMigration.addEventListener("click", cancelMigration);
+    
+    // Mutual exclusions
+    chkIncrementalSync.addEventListener("change", () => {
+        if (chkIncrementalSync.checked) {
+            chkVerifyOnly.checked = false;
+            chkDryRun.checked = false;
+            chkFixMismatches.checked = false;
+        }
+    });
+    chkVerifyOnly.addEventListener("change", () => {
+        if (chkVerifyOnly.checked) {
+            chkIncrementalSync.checked = false;
+        }
+    });
+    chkDryRun.addEventListener("change", () => {
+        if (chkDryRun.checked) {
+            chkIncrementalSync.checked = false;
+        }
+    });
+    chkFixMismatches.addEventListener("change", () => {
+        if (chkFixMismatches.checked) {
+            chkIncrementalSync.checked = false;
+        }
+    });
     
     btnClearLogs.addEventListener("click", () => { logTerminal.innerHTML = ""; });
     btnAutoscroll.addEventListener("click", toggleAutoscroll);
@@ -647,6 +672,7 @@ async function startMigration(confirmOverwrite = false) {
         verify_only: chkVerifyOnly.checked,
         fix_mismatches: chkFixMismatches.checked,
         exclude_directus: chkExcludeDirectus.checked,
+        incremental_sync: chkIncrementalSync.checked,
         batch_size: parseInt(inputBatchSize.value) || 5000,
         confirm_overwrite: confirmOverwrite
     };

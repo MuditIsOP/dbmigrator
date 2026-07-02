@@ -199,6 +199,7 @@ def start_migration():
     verify_only = data.get("verify_only", False)
     fix_mismatches = data.get("fix_mismatches", False)
     exclude_directus = data.get("exclude_directus", True)
+    incremental_sync = data.get("incremental_sync", False)
     batch_size = int(data.get("batch_size", 5000))
     confirm_overwrite = data.get("confirm_overwrite", False)
     
@@ -223,8 +224,8 @@ def start_migration():
     aws_config = profile["aws"]
     azure_config = profile["azure"]
     
-    # Check if database already exists on Azure and warn if not confirmed (skip if verify_only or fix_mismatches is active)
-    if not dry_run and not verify_only and not fix_mismatches and not confirm_overwrite:
+    # Check if database already exists on Azure and warn if not confirmed (skip if verify_only, fix_mismatches, or incremental_sync is active)
+    if not dry_run and not verify_only and not fix_mismatches and not incremental_sync and not confirm_overwrite:
         # Check if any database exists on Azure
         existing_dbs = []
         for db in databases.keys():
@@ -254,8 +255,8 @@ def start_migration():
 
     # Start migration in background
     db_names = list(databases.keys())
-    log_migration(None, None, f"Starting migration for {', '.join(db_names)} (Dry run: {dry_run}, Verify only: {verify_only}, Fix mismatches: {fix_mismatches}, Exclude directus: {exclude_directus})", 0, "START")
-    start_async_migration(aws_config, azure_config, databases, dry_run, resume, batch_size, verify_only, fix_mismatches, exclude_directus)
+    log_migration(None, None, f"Starting migration for {', '.join(db_names)} (Dry run: {dry_run}, Verify only: {verify_only}, Fix mismatches: {fix_mismatches}, Exclude directus: {exclude_directus}, Incremental sync: {incremental_sync})", 0, "START")
+    start_async_migration(aws_config, azure_config, databases, dry_run, resume, batch_size, verify_only, fix_mismatches, exclude_directus, incremental_sync)
     return jsonify({"message": "Migration started successfully"})
 
 @app.route("/api/migrate/status", methods=["GET"])

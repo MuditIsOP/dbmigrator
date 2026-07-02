@@ -142,6 +142,24 @@ def update_table_checkpoint(db_name, table_name):
         checkpoints[db_name]["completed_tables"].append(table_name)
     save_checkpoints(checkpoints)
 
+def update_checkpoint_meta(db_name, key, subkey, value):
+    checkpoints = load_checkpoints()
+    if db_name not in checkpoints:
+        checkpoints[db_name] = {
+            "completed_tables": [],
+            "completed_objects": {
+                "views": [],
+                "functions": [],
+                "procedures": [],
+                "triggers": [],
+                "events": []
+            }
+        }
+    if key not in checkpoints[db_name]:
+        checkpoints[db_name][key] = {}
+    checkpoints[db_name][key][subkey] = value
+    save_checkpoints(checkpoints)
+
 def update_object_checkpoint(db_name, obj_type, obj_name):
     checkpoints = load_checkpoints()
     if db_name not in checkpoints:
