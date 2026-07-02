@@ -209,6 +209,19 @@ def find_aws_matched_pk(aws_conn, az_conn, db_name, table, pks, aws_columns):
         if match_cols:
             conds = []
             params = []
+            
+            # Range optimization to leverage PRIMARY KEY index and avoid slow full table scans
+            has_range = False
+            if len(pks) == 1:
+                pk_col = pks[0]
+                pk_val = last_az_row.get(pk_col)
+                if isinstance(pk_val, (int, float)):
+                    conds.append(f"`{pk_col}` >= %s")
+                    params.append(pk_val - 10000)
+                    conds.append(f"`{pk_col}` <= %s")
+                    params.append(pk_val + 10000)
+                    has_range = True
+                    
             for col in match_cols:
                 val = last_az_row[col]
                 if val is None:
@@ -222,6 +235,23 @@ def find_aws_matched_pk(aws_conn, az_conn, db_name, table, pks, aws_columns):
                 res = aws_cur.fetchone()
                 if res:
                     return [res[pk] for pk in pks]
+                    
+            # Fallback 1: Retry without index range filter if no match found within range
+            if has_range:
+                conds_no_range = []
+                params_no_range = []
+                for col in match_cols:
+                    val = last_az_row[col]
+                    if val is None:
+                        conds_no_range.append(f"`{col}` IS NULL")
+                    else:
+                        conds_no_range.append(f"`{col}` = %s")
+                        params_no_range.append(val)
+                with aws_conn.cursor() as aws_cur:
+                    aws_cur.execute(f"SELECT {', '.join([f'`{pk}`' for pk in pks])} FROM `{db_name}`.`{table}` WHERE {' AND '.join(conds_no_range)} LIMIT 1", params_no_range)
+                    res = aws_cur.fetchone()
+                    if res:
+                        return [res[pk] for pk in pks]
 
         # Fallback: Match by PK columns directly
         conds = []
