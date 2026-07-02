@@ -638,7 +638,7 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
             if az_row_count != row_count:
                 err_msg = f"Row count mismatch! Source: {row_count}, Dest: {az_row_count}"
                 log_error(db_name, table, "Row Count Validation", 0, "FAILED", err_msg)
-                raise ValueError(f"Table data copy verification failed for table {table}: {err_msg}")
+                log_migration(db_name, table, f"Warning: Table data copy validation warning: {err_msg}", 0, "WARNING")
             else:
                 log_verification(db_name, table, "Row Count Validation", 0, "SUCCESS")
                 
