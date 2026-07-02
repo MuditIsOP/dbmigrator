@@ -334,6 +334,41 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
             return fetch_table_primary_key(conn, db_name, table)
         pks = execute_with_retry(aws_config, db_name, get_pk)
         
+        if not pks:
+            def get_fallback_pks(conn):
+                with conn.cursor() as cursor:
+                    # 1. Look for auto_increment column
+                    cursor.execute("""
+                        SELECT COLUMN_NAME 
+                        FROM information_schema.COLUMNS 
+                        WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s AND EXTRA LIKE '%%auto_increment%%'
+                    """, (db_name, table))
+                    row = cursor.fetchone()
+                    if row:
+                        return [row["COLUMN_NAME"]]
+                    
+                    # 2. Look for unique key constraint columns
+                    cursor.execute("""
+                        SELECT COLUMN_NAME 
+                        FROM information_schema.STATISTICS 
+                        WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s AND NON_UNIQUE = 0
+                        ORDER BY INDEX_NAME, SEQ_IN_INDEX
+                    """, (db_name, table))
+                    rows = cursor.fetchall()
+                    if rows:
+                        return [r["COLUMN_NAME"] for r in rows]
+                        
+                    # 3. Look for column named 'id'
+                    cursor.execute("""
+                        SELECT COLUMN_NAME 
+                        FROM information_schema.COLUMNS 
+                        WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s AND COLUMN_NAME = 'id'
+                    """, (db_name, table))
+                    if cursor.fetchone():
+                        return ["id"]
+                    return []
+            pks = execute_with_retry(aws_config, db_name, get_fallback_pks)
+        
         table_exists_on_azure = False
         if not dry_run:
             def check_table_exists(conn):
