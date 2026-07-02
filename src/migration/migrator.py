@@ -415,6 +415,9 @@ def sync_database_objects(aws_config, azure_config, db_name, tables, views, proc
             # Save the starting max PK for delta verifications
             if last_pk_values:
                 update_checkpoint_meta(db_name, "starting_max_pks", table, last_pk_values)
+                if "starting_max_pks" not in checkpoint:
+                    checkpoint["starting_max_pks"] = {}
+                checkpoint["starting_max_pks"][table] = last_pk_values
                 
             def get_delta_count(conn):
                 with conn.cursor() as cursor:
